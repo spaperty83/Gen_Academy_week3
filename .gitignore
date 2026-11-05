@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.sqlite
+outputs/*
+!outputs/samples/
+!outputs/eval_results.csv
+.pytest_cache/
+.ruff_cache/
+*.sqlite-wal
+*.sqlite-shm

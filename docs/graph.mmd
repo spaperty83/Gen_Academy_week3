@@ -1,0 +1,53 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	orchestrator(orchestrator)
+	sights_researcher(sights_researcher)
+	food_researcher(food_researcher)
+	merge_research(merge_research)
+	planner(planner)
+	critic(critic)
+	human_review(human_review)
+	recovery(recovery)
+	save(save)
+	export_failed(export_failed)
+	end_cancelled(end_cancelled)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> orchestrator;
+	critic --> orchestrator;
+	export_failed -.-> end_cancelled;
+	export_failed -.-> save;
+	food_researcher --> merge_research;
+	human_review -.-> end_cancelled;
+	human_review -.-> orchestrator;
+	human_review -.-> recovery;
+	human_review -.-> save;
+	merge_research --> orchestrator;
+	orchestrator -.-> __end__;
+	orchestrator -.-> critic;
+	orchestrator -.-> food_researcher;
+	orchestrator -.-> human_review;
+	orchestrator -.-> planner;
+	orchestrator -.-> recovery;
+	orchestrator -.-> sights_researcher;
+	planner --> orchestrator;
+	recovery -.-> __end__;
+	recovery -.-> end_cancelled;
+	recovery -.-> orchestrator;
+	save -.-> __end__;
+	save -.-> export_failed;
+	save -.-> human_review;
+	save -.-> orchestrator;
+	save -.-> recovery;
+	sights_researcher --> merge_research;
+	end_cancelled --> __end__;
+	export_failed -.-> export_failed;
+	human_review -.-> human_review;
+	recovery -.-> recovery;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
