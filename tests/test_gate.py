@@ -123,3 +123,9 @@ def test_recovery_reason_priority(ready):
         "trip_steps": 30, "agent_error": AgentError(agent="critic", message="failed"),
     }
     assert recovery_reason(state) == "trip limit reached"
+
+
+def test_mutated_model_cannot_bypass_schema_gate(ready):
+    ready["itinerary"].days[0].stops[0].time_slot = "midnight"
+    assert not approvable(ready)
+    assert route_after_limits(ready) == "recovery"

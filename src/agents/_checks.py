@@ -72,7 +72,7 @@ def hard_checks(state: TripState) -> list[Finding]:
 
 
 def doubtful_stops(state: TripState) -> list[dict[str, Any]]:
-    """Select at most three named stops with thin or city-unclear evidence."""
+    """Prioritize at most three uncertain stops; source origin never proves current hours."""
     itinerary = Itinerary.model_validate(state["itinerary"])
     trip = TripRequest.model_validate(state["request"])
     places = {
@@ -93,9 +93,8 @@ def doubtful_stops(state: TripState) -> list[dict[str, Any]]:
                 or not validate_places([place], state.get("source_registry", {}))[0]
                 or trip.city.casefold() not in place.evidence_quote.casefold()
             )
-            if doubtful:
-                candidates.append({
-                    "place_name": stop.place_name, "day": day.day_number,
-                    "source_url": stop.source_url,
-                })
-    return candidates[:3]
+            candidates.append((not doubtful, {
+                "place_name": stop.place_name, "day": day.day_number,
+                "source_url": stop.source_url,
+            }))
+    return [candidate for _, candidate in sorted(candidates, key=lambda item: item[0])[:3]]

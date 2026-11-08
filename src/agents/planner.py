@@ -70,7 +70,9 @@ def _validate_draft(state: TripState, run: SpecialistRun, draft: BaseModel) -> N
             raise OutputInvalid("Rainy days require grounded indoor stops")
 
 
-def _weather_notes(itinerary: Itinerary, weather: dict[str, Any] | None) -> Itinerary:
+def _weather_notes(
+    itinerary: Itinerary, weather: dict[str, Any] | None, run: SpecialistRun,
+) -> Itinerary:
     """Replace generated weather claims with notes derived from actual tool data."""
     daily = weather.get("daily", {}) if weather else {}
     days = []
@@ -82,7 +84,14 @@ def _weather_notes(itinerary: Itinerary, weather: dict[str, Any] | None) -> Itin
         days.append(day.model_copy(update={"weather_note": note}))
     warnings = list(itinerary.warnings)
     if weather is None:
-        warnings.append("Weather unavailable; outdoor plans may need adjustment.")
+        beyond = any(
+            (envelope(message) or {}).get("error") == "beyond_forecast_window"
+            for message in run.tool_messages if message.name == "get_weather"
+        )
+        warnings.append(
+            "Weather beyond forecast window; no forecast was invented."
+            if beyond else "Weather unavailable; outdoor plans may need adjustment."
+        )
     return itinerary.model_copy(update={"days": days, "warnings": warnings})
 
 
@@ -125,7 +134,7 @@ def planner(state: TripState, config: RunnableConfig) -> dict[str, Any]:
         )
         weather = _weather(run)
         return {
-            "itinerary": _weather_notes(itinerary, weather), "weather": weather,
+            "itinerary": _weather_notes(itinerary, weather, run), "weather": weather,
             "draft_version": state.get("draft_version", 0) + 1,
             "approved_version": None, "agent_error": None,
         }

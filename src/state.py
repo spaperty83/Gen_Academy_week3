@@ -34,7 +34,7 @@ MAX_RESEARCHER_ATTEMPTS = 2
 class _Model(BaseModel):
     """Reject misspelled or unexpected fields at structured-output boundaries."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
 
 
 class _DatedModel(_Model):
@@ -103,6 +103,9 @@ class ResearchResult(_Model):
     places: list[Place] = Field(default_factory=list)
     error: str | None = None
     round_id: int = Field(ge=0, strict=True)
+    # Receipts travel in this branch-owned field; merge publishes shared evidence.
+    sources: dict[str, SourceRecord] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class Stop(_Model):

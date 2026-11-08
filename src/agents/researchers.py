@@ -75,7 +75,7 @@ def _sources(run: SpecialistRun | None) -> dict[str, SourceRecord]:
 def make_researcher(
     focus: Literal["sights", "food"],
 ) -> Callable[[TripState, RunnableConfig], dict[str, Any]]:
-    """Create a branch node that writes its own result and new evidence only."""
+    """Create a branch that writes only its own result, including evidence receipts."""
     if focus not in {"sights", "food"}:
         raise ValueError("Research focus must be sights or food")
 
@@ -88,7 +88,8 @@ def make_researcher(
             round_id = state.get("research_round", 0)
             desired, budget, instruction = research_directive(state, focus)
             run = SpecialistRun(
-                SEARCH_TOOLS, budget, strict_tools=True, search_first=True, read_limit=2,
+                SEARCH_TOOLS, budget, strict_tools=True, optional_tools={"read_page"},
+                search_first=True, read_limit=2,
             )
             output = run.execute(
                 get_llm(), SEARCH_TOOLS, ResearchCandidates, RESEARCHER.format(focus=focus),
@@ -97,7 +98,7 @@ def make_researcher(
                     "tool_budget": budget, "instructions": instruction,
                 }, config, f"{focus}_researcher",
             )
-            if run.tool_failed:
+            if run.failed_tools - {"read_page"}:
                 raise ToolExecutionFailed("Research tool failed")
             entries = _sources(run)
             kept, dropped = validate_places(output.places, entries)
@@ -115,6 +116,11 @@ def make_researcher(
                 LOGGER.info("Research evidence rejected for %d candidates", len(dropped))
             result = ResearchResult(
                 status="ok" if places else "empty", places=places, round_id=round_id,
+                sources=entries,
+                warnings=(["read_page failed; using search snippets."]
+                          if "read_page" in run.failed_tools else [])
+                + ([f"{focus} candidates dropped: invalid evidence or instruction-like source text."]
+                   if dropped else []),
             )
         except Exception as error:  # noqa: BLE001 - research branches must never raise
             LOGGER.warning("%s researcher failed (%s)", focus, type(error).__name__)
@@ -123,7 +129,8 @@ def make_researcher(
             result = ResearchResult(
                 status="failed", error=failure_message(error),
                 round_id=round_id if type(round_id) is int and round_id >= 0 else 0,
+                sources=entries,
             )
-        return {f"{focus}_result": result, "source_registry": entries}
+        return {f"{focus}_result": result}
 
     return researcher

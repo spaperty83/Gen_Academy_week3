@@ -62,7 +62,9 @@ def export_is_complete(base_name: str | Path) -> bool:
         manifest = _read_manifest(base)
         if not isinstance(manifest.get("itinerary_hash"), str):
             return False
-        if not isinstance(manifest.get("draft_version"), int):
+        if type(manifest.get("draft_version")) is not int:
+            return False
+        if manifest["draft_version"] != int(base.name.rsplit("_v", 1)[1]):
             return False
         if manifest["itinerary_hash"] != manifest["files"][".json"]:
             return False
@@ -72,7 +74,7 @@ def export_is_complete(base_name: str | Path) -> bool:
             )
             for suffix in (".json", ".md")
         )
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
         return False
 
 

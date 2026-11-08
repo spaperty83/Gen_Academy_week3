@@ -1,0 +1,38 @@
+[
+  {
+    "case_id": "lisbon",
+    "kind": "normal",
+    "user_input": "1 day in Lisbon, budget, relaxed pace, food and history",
+    "revision": "Keep Lisbon for one day; change the pace to normal."
+  },
+  {
+    "case_id": "porto",
+    "kind": "normal",
+    "user_input": "2 days in Porto, mid budget, normal pace, architecture and history",
+    "revision": "Keep Porto and two days, but change the pace to relaxed."
+  },
+  {
+    "case_id": "paris",
+    "kind": "normal",
+    "user_input": "3 days in Paris, luxury budget, relaxed pace, art and food",
+    "revision": "Keep Paris and three days, but change the pace to normal."
+  },
+  {
+    "case_id": "kyoto",
+    "kind": "normal",
+    "user_input": "4 days in Kyoto, mid budget, normal pace, temples and gardens",
+    "revision": "Keep Kyoto, four days and normal pace, but change the budget to budget."
+  },
+  {
+    "case_id": "rome",
+    "kind": "normal",
+    "user_input": "7 days in Rome, budget, packed pace, food and history",
+    "revision": "Keep Rome, seven days and packed pace; put a museum in the afternoon on Day 2."
+  },
+  {
+    "case_id": "vague",
+    "kind": "vague",
+    "user_input": "A few days somewhere nice and warm",
+    "revision": null
+  }
+]

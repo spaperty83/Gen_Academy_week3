@@ -55,12 +55,14 @@ def has_enough(
     """
     minimum = needed(request)
     candidates: dict[str, set[str]] = {"sights": set(), "food": set()}
+    seen: set[str] = set()
     for place in places:
         category = place.category if isinstance(place, Place) else place.get("category")
         name = place.name if isinstance(place, Place) else place.get("name", "")
         if not isinstance(name, str) or category not in {"sight", "activity", "food", "other"}:
             continue
         normalized = normalize_name(name)
-        if normalized:
+        if normalized and normalized not in seen:
             candidates["food" if category == "food" else "sights"].add(normalized)
+            seen.add(normalized)
     return all(len(candidates[category]) >= count for category, count in minimum.items())

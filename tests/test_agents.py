@@ -179,13 +179,13 @@ def test_researchers_own_tools_config_round_and_evidence(state, fake_tools, monk
     ])
     config = {"configurable": {"marker": "forwarded"}, "tags": ["mocked"]}
     result = make_researcher(focus)(state, config)
-    assert set(result) == {f"{focus}_result", "source_registry"}
+    assert set(result) == {f"{focus}_result"}
     assert result[f"{focus}_result"].status == "ok"
     assert result[f"{focus}_result"].round_id == 7
     assert all(place.found_by == focus for place in result[f"{focus}_result"].places)
     assert set(model.bound_names[0]) == {"web_search", "read_page", "ResearchCandidates"}
     assert fake_tools[0][0][1]["configurable"]["marker"] == "forwarded"
-    assert result["source_registry"]
+    assert result[f"{focus}_result"].sources
     tool_messages = [
         message for message in model.seen_messages[-1] if isinstance(message, ToolMessage)
     ]
@@ -237,7 +237,7 @@ def test_looping_researcher_stops_at_fallback_budget(state, fake_tools, monkeypa
     assert result[f"{focus}_result"].error == "specialist_step_limit_reached"
     assert len(fake_tools[0]) == 8
     assert model.calls == 9
-    assert result["source_registry"]  # successful evidence survives a later limit
+    assert result[f"{focus}_result"].sources  # successful evidence survives a later limit
 
 
 @pytest.mark.parametrize("focus", ["sights", "food"])
@@ -293,7 +293,7 @@ def test_researcher_cannot_reuse_registry_without_own_tool_responses(state, fake
     ])
     result = make_researcher("sights")(state, {})
     assert result["sights_result"].status == "empty"
-    assert result["source_registry"] == {}
+    assert result["sights_result"].sources == {}
 
 
 @pytest.mark.parametrize(("module", "node", "schema", "invalid"), [
@@ -372,7 +372,7 @@ def test_planner_and_critic_loop_limits_are_four(state, fake_tools, monkeypatch,
     state["request"] = state["request"].model_copy(update={"start_date": "2026-11-04"})
     args = (
         {"city": "Lisbon", "start_date": "2026-11-04", "days": 1}
-        if tool_name == "get_weather" else {"query": "Lisbon"}
+        if tool_name == "get_weather" else {"query": "Lisbon Museum Alpha"}
     )
     model = use_model(monkeypatch, module, [call(tool_name, args)])
     result = node(state, {})
@@ -429,14 +429,14 @@ def test_critic_multiple_failed_tools_add_one_soft_finding(state, monkeypatch):
 
     monkeypatch.setattr(critic_module, "SEARCH_TOOLS", [raising_search])
     use_model(monkeypatch, critic_module, [
-        call("web_search", {"query": "Lisbon"}),
-        call("web_search", {"query": "Lisbon again"}),
+        call("web_search", {"query": "Lisbon Museum Alpha"}),
+        call("web_search", {"query": "Lisbon Museum Alpha again"}),
         structured(CriticReview, {"soft_findings": []}),
     ])
     result = critic(state, {})
     assert result["agent_error"] is None
-    assert len(result["critique"].soft_findings) == 1
-    assert "uncertain" in result["critique"].soft_findings[0].issue
+    assert sum("uncertain" in finding.issue for finding in result["critique"].soft_findings) == 1
+    assert any("Weather unavailable" in finding.issue for finding in result["critique"].soft_findings)
 
 
 def test_planner_applies_findings_and_feedback_in_task_prompt(state, fake_tools, monkeypatch):
@@ -599,7 +599,7 @@ def test_invalid_source_record_is_dropped_without_breaking_research_boundary(sta
         structured(ResearchCandidates, {"places": [state["places"][0].model_dump()]}),
     ])
     result = make_researcher("sights")(state, {})
-    assert result["sights_result"].status == "empty" and result["source_registry"] == {}
+    assert result["sights_result"].status == "empty" and result["sights_result"].sources == {}
 
 
 def test_critic_does_not_return_malformed_records_to_parent_reducer(state, monkeypatch):
@@ -619,3 +619,14 @@ def test_critic_does_not_return_malformed_records_to_parent_reducer(state, monke
     result = critic(state, {})
     assert result["source_registry"] == {}
     assert result["agent_error"] is None
+
+
+def test_critic_cannot_investigate_an_unselected_fourth_stop(state, fake_tools, monkeypatch):
+    use_model(monkeypatch, critic_module, [
+        call("web_search", {"query": "Fourth venue outside the itinerary"}),
+        structured(CriticReview, {"soft_findings": []}),
+    ])
+    result = critic(state, {})
+    assert result["agent_error"] is None
+    assert not fake_tools[0]  # request was blocked before any service/tool execution
+    assert sum("uncertain" in finding.issue for finding in result["critique"].soft_findings) == 1

@@ -244,8 +244,6 @@ def save_itinerary(
         or has_hard_failures
     ):
         return _result(error="not_approved")
-    if _failure(config, "write"):
-        return _result(error="write_failed")
     try:
         city = _safe_component(itinerary["city"])
         thread = _safe_component(thread_id[:8])

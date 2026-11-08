@@ -1,6 +1,8 @@
 """Persistent travel workflow, interrupt-based review, public API and CLI."""
 
 import argparse
+import hashlib
+import json
 import logging
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
@@ -14,26 +16,32 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, Send, interrupt
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from src import export as export_files
 from src import gate
 from src.agents._runtime import envelope
 from src.agents.critic import critic
 from src.agents.orchestrator import apply_revision, orchestrator
 from src.agents.planner import planner
 from src.agents.researchers import make_researcher
-from src.evidence import normalize_name
+from src.evidence import normalize_name, validate_places
 from src.state import (
+    MAX_CORRECTION_CYCLES,
+    MAX_ROUND_STEPS,
+    MAX_TRIP_STEPS,
     AgentError,
     Critique,
     Place,
     ResearchResult,
+    SourceRecord,
     TripState,
 )
 from src.tools import save_itinerary
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
+FAILURE_MODES = frozenset({"extract", "tavily", "weather", "llm_json"})
 
 
 class GraphState(TripState, total=False):
@@ -63,6 +71,8 @@ def _city(state: Mapping[str, Any]) -> str | None:
 
 def _config(thread_id: str, city: str | None, failure_mode: str | None = None) -> RunnableConfig:
     """Keep failure injection in runtime config only; allow enough graph supersteps."""
+    if failure_mode is not None and failure_mode not in FAILURE_MODES:
+        raise ValueError("Unsupported failure_mode")
     label = city or "pending"
     return {
         "configurable": {"thread_id": thread_id, "failure_mode": failure_mode},
@@ -90,7 +100,10 @@ def _agent_node(function: Callable, name: str) -> Callable:
             return function(state, _node_config(state, config))
         except Exception as error:  # noqa: BLE001 - final secret-safe agent boundary
             LOGGER.warning("%s node failed (%s)", name, type(error).__name__)
-            update = {"agent_error": AgentError(agent=name, message="agent_failed")}
+            update = {
+                "agent_error": AgentError(agent=name, message="agent_failed"),
+                "warnings": [f"{name} failed; completed state is retained for recovery."],
+            }
             if name == "orchestrator":
                 update["next"] = "recovery"
             return update
@@ -105,7 +118,13 @@ def _research_node(focus: str) -> Callable:
         try:
             result = function(state, _node_config(state, config))
             if result.get("agent_error") is None:
-                return result
+                branch = ResearchResult.model_validate(result[f"{focus}_result"])
+                # Normalize older/custom branch adapters without allowing shared writes.
+                sources = branch.sources | {
+                    key: SourceRecord.model_validate(value)
+                    for key, value in result.get("source_registry", {}).items()
+                }
+                return {f"{focus}_result": branch.model_copy(update={"sources": sources})}
         except Exception as error:  # noqa: BLE001 - researchers return failed status
             LOGGER.warning("%s research node failed (%s)", focus, type(error).__name__)
         return {f"{focus}_result": ResearchResult(
@@ -144,6 +163,7 @@ def merge_research(state: GraphState) -> dict[str, Any]:
     try:
         warnings = []
         replacement: dict[str, list[Place]] = {}
+        sources: dict[str, SourceRecord] = {}
         for focus in state.get("dispatched", []):
             if focus not in {"sights", "food"}:
                 continue
@@ -152,21 +172,28 @@ def merge_research(state: GraphState) -> dict[str, Any]:
                 warnings.append(f"{focus} research returned no result.")
                 replacement[focus] = []
                 continue
-            result = ResearchResult.model_validate(raw)
-            if result.round_id != state["research_round"]:
+            result_round = raw.get("round_id") if isinstance(raw, Mapping) else raw.round_id
+            if result_round != state["research_round"]:
                 warnings.append(f"{focus} stale research result ignored.")
                 continue  # Ignoring a stale response must not erase valid existing places.
+            result = ResearchResult.model_validate(raw)
+            sources.update(result.sources)
+            warnings.extend(result.warnings)
             if result.status != "ok":
                 warnings.append(f"{focus} research {result.status}.")
-            replacement[focus] = [
-                place for place in result.places
-                if result.status == "ok" and _focus(place) == focus
-            ]
+            candidates = [place for place in result.places
+                          if result.status == "ok" and _focus(place) == focus]
+            replacement[focus], dropped = validate_places(
+                candidates, state.get("source_registry", {}) | sources,
+            )
+            if dropped:
+                warnings.append(f"{focus} candidates dropped: invalid evidence.")
         old = [Place.model_validate(raw) for raw in state.get("places", [])]
         kept = [place for place in old if _focus(place) not in replacement]
         incoming = [place for values in replacement.values() for place in values]
         return {
             "places": _dedupe([*kept, *incoming]), "warnings": warnings,
+            "source_registry": sources,
             "sights_result": None, "food_result": None, "dispatched": [],
         }
     except Exception as error:  # noqa: BLE001 - keep completed branch state recoverable
@@ -209,7 +236,52 @@ def _findings(state: TripState, kind: str) -> list[Any]:
     value = state.get("critique")
     if value is None:
         return []
-    return _json(getattr(Critique.model_validate(value), kind))
+    try:
+        return _json(getattr(Critique.model_validate(value), kind))
+    except ValidationError:
+        return ([{"issue": "schema invalid critique", "owner": "planner", "day": None}]
+                if kind == "hard_failures" else [])
+
+
+def _screen_warnings(state: Mapping[str, Any], *, approval: bool = False) -> list[str]:
+    """Project persisted uncertainty and guardrails onto every human-facing screen."""
+    warnings = list(state.get("warnings", []))
+    itinerary = _json(state.get("itinerary"))
+    if isinstance(itinerary, Mapping):
+        warnings.extend(itinerary.get("warnings", []))
+    if approval:
+        warnings.extend(finding["issue"] for finding in _findings(state, "soft_findings"))
+    else:
+        warnings.extend("Hard failure: " + finding["issue"]
+                        for finding in _findings(state, "hard_failures"))
+    error = _json(state.get("agent_error"))
+    if isinstance(error, Mapping):
+        warnings.append(f"{error.get('agent', 'agent')} failed; completed state is retained for recovery.")
+    if state.get("trip_steps", 0) >= MAX_TRIP_STEPS:
+        warnings.append("Trip limit reached; start a new trip or cancel if recovery is needed.")
+    elif (
+        state.get("round_steps", 0) >= MAX_ROUND_STEPS
+        or state.get("correction_cycles", 0) >= MAX_CORRECTION_CYCLES
+    ):
+        warnings.append("Round or correction limit reached; limits never force approval.")
+    return list(dict.fromkeys(warnings))
+
+
+def trip_screen(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a stable screen contract, including clarification and terminal outcomes."""
+    pending = result.get("__interrupt__", ())
+    if pending:
+        return dict(pending[0].value)
+    warnings = _screen_warnings(result)
+    if result.get("saved_path"):
+        return {"kind": "exported", "options": [], "warnings": warnings}
+    if result.get("new_trip"):
+        return {"kind": "new_trip", "options": ["new_trip", "cancel"], "warnings": warnings}
+    if result.get("cancelled"):
+        return {"kind": "cancelled", "options": [], "warnings": warnings}
+    if result.get("request") is None and result.get("next") == "stop":
+        return {"kind": "clarification", "options": ["new_trip", "cancel"], "warnings": warnings}
+    return {"kind": "stopped", "options": [], "warnings": warnings}
 
 
 def _approval_payload(state: GraphState) -> dict[str, Any]:
@@ -218,7 +290,8 @@ def _approval_payload(state: GraphState) -> dict[str, Any]:
         "kind": "approval", "itinerary": _json(state["itinerary"]),
         "draft_version": state["draft_version"],
         "soft_findings": _findings(state, "soft_findings"),
-        "warnings": list(state.get("warnings", [])),
+        "warnings": _screen_warnings(state, approval=True),
+        "options": ["approve", "revise", "cancel"],
         "delegation_log": _json(state.get("delegation_log", [])[-10:]),
     }
 
@@ -288,10 +361,14 @@ def recovery(
 ) -> Command[Literal["recovery", "orchestrator", "end_cancelled", "__end__"]]:
     """Pause before revision or retry work, rejecting options unavailable at caps."""
     answer = _answer(interrupt({
-        "kind": "recovery", "reason": gate.recovery_reason(state) or "Recovery requested",
+        "kind": "recovery", "reason": (
+            f"{_json(state['agent_error'])['agent']} agent_error"
+            if state.get("agent_error") is not None
+            else gate.recovery_reason(state) or "Recovery requested"
+        ),
         "options": gate.recovery_options(state),
         "hard_findings": _findings(state, "hard_failures"),
-        "warnings": list(state.get("warnings", [])),
+        "warnings": _screen_warnings(state),
     }))
     action = answer.get("decision")
     if action not in gate.recovery_options(state):
@@ -368,6 +445,7 @@ def export_failed(state: GraphState) -> Command[Literal["save", "export_failed",
     """Pause before retrying export; do not revisit supervisor or touch step counts."""
     answer = _answer(interrupt({
         "kind": "export_failed", "reason": state.get("export_error") or "write_failed",
+        "options": ["retry_export", "cancel"], "warnings": _screen_warnings(state),
     }))
     if answer.get("decision") == "retry_export":
         return Command(goto="save")
@@ -465,7 +543,8 @@ def start_trip(
 ) -> dict[str, Any]:
     """Run a fresh trip to completion/pause; return its state and thread_id."""
     thread, value, config = _prepare(graph, user_input, thread_id, None, None, None, failure_mode)
-    return {**graph.invoke(value, config=config), "thread_id": thread}
+    result = {**graph.invoke(value, config=config), "thread_id": thread}
+    return result | {"screen": trip_screen(result)}
 
 
 def resume_trip(
@@ -477,7 +556,8 @@ def resume_trip(
     thread, value, config = _prepare(
         graph, None, thread_id, decision, draft_version, feedback, failure_mode,
     )
-    return {**graph.invoke(value, config=config), "thread_id": thread}
+    result = {**graph.invoke(value, config=config), "thread_id": thread}
+    return result | {"screen": trip_screen(result)}
 
 
 def stream_trip(
@@ -489,8 +569,60 @@ def stream_trip(
     thread, value, config = _prepare(
         graph, user_input, thread_id, decision, draft_version, feedback, failure_mode,
     )
-    for chunk in graph.stream(value, config=config, stream_mode="updates"):
-        yield {**chunk, "thread_id": thread}
+    for mode, chunk in graph.stream(value, config=config, stream_mode=["updates", "custom"]):
+        if mode == "custom":
+            yield {"progress": _json(chunk), "thread_id": thread}
+        else:
+            yield {**_json(chunk), "thread_id": thread}
+
+
+
+def get_trip(graph: CompiledStateGraph, thread_id: str) -> dict[str, Any]:
+    """Open a saved thread read-only, including its current native pause and screen."""
+    snapshot = graph.get_state(_config(thread_id, None))
+    if not snapshot.values:
+        raise ValueError("Trip not found")
+    result = {**_json(snapshot.values), "thread_id": thread_id}
+    pending = _pending(snapshot)
+    if pending:
+        result["__interrupt__"] = tuple(pending)
+    return result | {"screen": trip_screen(result)}
+
+
+def get_export(graph: CompiledStateGraph, thread_id: str) -> dict[str, Any]:
+    """Return downloadable Markdown only for a complete, still-approved manifest.
+
+    The UI never accesses output files or trusts checkpoint metadata as evidence
+    of completion. Validate the actual bytes again before returning the download.
+    """
+    state = get_trip(graph, thread_id)
+    path = state.get("saved_path")
+    incomplete = {
+        "path": path, "complete": False, "manifest": None,
+        "markdown": None, "file_name": None,
+    }
+    if not isinstance(path, str) or not path.endswith(".json") or not _save_guard(state):
+        return incomplete
+    base = path.removesuffix(".json")
+    try:
+        if not export_files.export_is_complete(base):
+            return incomplete
+        manifest = json.loads(Path(base + ".manifest.json").read_text("utf-8"))
+        json_data = Path(base + ".json").read_bytes()
+        markdown = Path(base + ".md").read_bytes()
+        if (
+            manifest != state.get("export_manifest")
+            or manifest["files"][".json"] != hashlib.sha256(json_data).hexdigest()
+            or manifest["files"][".md"] != hashlib.sha256(markdown).hexdigest()
+            or json.loads(json_data) != state.get("itinerary")
+        ):
+            return incomplete
+        return {
+            "path": path, "complete": True, "manifest": manifest,
+            "markdown": markdown, "file_name": Path(base + ".md").name,
+        }
+    except (OSError, ValueError, KeyError, TypeError, export_files.ExportError):
+        return incomplete
 
 
 def list_trips(graph: CompiledStateGraph, checkpointer: BaseCheckpointSaver) -> list[dict[str, Any]]:

@@ -33,13 +33,14 @@ def critic(state: TripState, config: RunnableConfig) -> dict[str, Any]:
     error_result = None
     try:
         hard = hard_checks(state)
-        run = SpecialistRun(SEARCH_TOOLS, 4)
+        targets = doubtful_stops(state)
+        run = SpecialistRun(SEARCH_TOOLS, 4, read_limit=2, spotcheck_targets=targets)
         review = run.execute(
             get_llm(), SEARCH_TOOLS, CriticReview, CRITIC,
             {
                 "request": state["request"], "itinerary": state["itinerary"],
                 "draft_version": version, "python_hard_findings": hard,
-                "doubtful_stops": doubtful_stops(state), "weather": state.get("weather"),
+                "doubtful_stops": targets, "weather": state.get("weather"),
                 "instructions": state.get("instructions", {}).get("critic", ""),
             }, config, "critic",
         )
@@ -53,6 +54,10 @@ def critic(state: TripState, config: RunnableConfig) -> dict[str, Any]:
                 hard = hard_checks(state)
             except Exception:  # noqa: BLE001 - last-resort schema failure is fail-closed
                 hard = [Finding(issue="schema invalid", owner="planner")]
+    if state.get("weather") is None and not any(
+        "weather" in finding.issue.casefold() for finding in soft
+    ):
+        soft.append(Finding(issue="Weather unavailable; no forecast was invented.", owner="planner"))
     if run is not None and run.tool_failed:
         soft = [finding for finding in soft if finding.issue != TOOL_UNCERTAINTY]
         soft.append(Finding(issue=TOOL_UNCERTAINTY, owner="researchers"))

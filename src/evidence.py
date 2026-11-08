@@ -1,6 +1,7 @@
 """Build evidence only from tool messages and validate exact source quotes."""
 
 import json
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from html import unescape
@@ -11,6 +12,26 @@ from langchain_core.messages import ToolMessage
 from src.state import SourceRecord
 
 GENERIC_WORDS = {"restaurant", "cafe", "bar", "museum", "the", "of"}
+
+
+INSTRUCTION_TEXT = re.compile(
+    r"\b(?:ignore|disregard|override|forget)\b.{0,100}"
+    r"\b(?:instructions?|prompts?|system|developer)\b"
+    r"|\b(?:system|developer|assistant)\s*(?:message|prompt)?\s*:"
+    r"|\b(?:you are|act as)\s+(?:an?\s+)?(?:assistant|agent)\b",
+    re.IGNORECASE,
+)
+
+
+def evidence_text(text: str) -> str:
+    """Exclude instruction-like passages from source evidence, including old checkpoints."""
+    if not isinstance(text, str):
+        return ""
+    passages = re.split(r"(?<=[.!?])\s+|[\r\n]+", text[:4000])
+    return " ".join(
+        passage for passage in passages
+        if not INSTRUCTION_TEXT.search(unicodedata.normalize("NFKC", unescape(passage)))
+    )
 
 
 def normalize_name(name: str) -> str:
@@ -93,7 +114,7 @@ def validate_places(
             or f" {normalize_name(name)} " not in f" {normalize_name(quote)} "
         ):
             reason = "quote_missing_name"
-        elif " ".join(quote.split()) not in " ".join((_field(source, "text") or "").split()):
+        elif " ".join(quote.split()) not in " ".join(evidence_text(_field(source, "text") or "").split()):
             reason = "quote_not_in_source"
         if reason:
             dropped.append(f"place[{index}]: {reason}")

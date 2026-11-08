@@ -182,3 +182,15 @@ def test_exports_new_itinerary_schema(destination, as_model):
     assert "MAAT: Art by the river." in markdown
     assert "https://example.org/maat" in markdown
     assert export.export_is_complete(destination)
+
+
+def test_manifest_version_must_match_export_base(destination, itinerary):
+    export.write_export(itinerary, destination)
+    path = filename(destination, ".manifest.json")
+    manifest = json.loads(path.read_text("utf-8"))
+    manifest["draft_version"] = 999
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not export.export_is_complete(destination)
+    repaired = export.write_export(itinerary, destination)
+    assert repaired["manifest"]["draft_version"] == 2
+    assert export.export_is_complete(destination)

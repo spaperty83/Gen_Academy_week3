@@ -57,7 +57,18 @@ def _structured(
     for attempt in range(2):
         try:
             return schema.model_validate(model.invoke(messages, config=config))
-        except (ValidationError, OutputParserException):
+        except (ValidationError, OutputParserException) as error:
+            # An unsupported route is a guardrail choice, not a reason to let
+            # a model invent an operational tool or repeatedly request save.
+            if schema is OrchestratorDecision and isinstance(error, ValidationError):
+                failures = error.errors()
+                if failures and all(
+                    item["loc"] == ("next",) and item["type"] == "literal_error"
+                    for item in failures
+                ):
+                    return OrchestratorDecision(
+                        next="recovery", reason="guardrail: invalid routing choice replaced with recovery",
+                    )
             if attempt:
                 raise StructuredOutputExhausted("Invalid structured output") from None
             messages.append(HumanMessage(
@@ -102,11 +113,13 @@ def _explicit_city(city: str, text: str) -> bool:
 def _counts(places: list[Any]) -> dict[str, int]:
     """Match coverage's distinct-name food-versus-non-food accounting."""
     names: dict[str, set[str]] = {"sights": set(), "food": set()}
+    seen: set[str] = set()
     for raw in places:
         place = Place.model_validate(raw)
         name = normalize_name(place.name)
-        if name:
+        if name and name not in seen:
             names["food" if place.category == "food" else "sights"].add(name)
+            seen.add(name)
     return {focus: len(values) for focus, values in names.items()}
 
 
@@ -157,6 +170,14 @@ def validate_decision(
                 return "recovery", "guardrail: research short of coverage; researcher attempts exhausted"
             chosen = "both" if len(short) == 2 else short[0]
             reasons.append("research short of coverage; dispatch only short researchers")
+    if _researchers(chosen) and state.get("request") is not None:
+        short = _short(state)
+        if short:
+            selected = [focus for focus in _researchers(chosen) if focus in short] or short
+            replacement = "both" if len(selected) == 2 else selected[0]
+            if replacement != chosen:
+                reasons.append("keep completed research; dispatch only short researchers")
+            chosen = replacement
     if any(
         state.get("researcher_attempts", {}).get(focus, 0) >= MAX_RESEARCHER_ATTEMPTS
         for focus in _researchers(chosen)
@@ -266,6 +287,7 @@ def orchestrator(state: TripState, config: RunnableConfig) -> dict[str, Any]:
         current = state | update
         if state.get("agent_error") is not None or _limits(current):
             next_agent, reason = validate_decision(current, "recovery")
+            update["warnings"] = [reason or "Recovery requested"]
             return _finish(update, next_agent, reason or "Recovery requested")
         if state.get("request") is None:
             parsed = _structured(
@@ -288,6 +310,8 @@ def orchestrator(state: TripState, config: RunnableConfig) -> dict[str, Any]:
         else:
             decision = _structured(OrchestratorDecision, ORCHESTRATOR, compact_summary(state), config)
         next_agent, guardrail = validate_decision(current, decision)
+        if guardrail is None and decision.reason.startswith("guardrail: "):
+            guardrail = decision.reason
         instructions = dict(decision.instructions)
         if state.get("decision") == "retry":
             for owner, text in state.get("instructions", {}).items():
@@ -298,6 +322,7 @@ def orchestrator(state: TripState, config: RunnableConfig) -> dict[str, Any]:
         update["agent_error"] = None
         reason = guardrail or decision.reason
         if guardrail:
+            update["warnings"] = [guardrail]
             LOGGER.info("%s", guardrail)
         return _finish(update, next_agent, reason)
     except Exception as error:  # noqa: BLE001 - supervisor follows the agent boundary rule
@@ -307,7 +332,8 @@ def orchestrator(state: TripState, config: RunnableConfig) -> dict[str, Any]:
             if isinstance(error, StructuredOutputExhausted) else "orchestrator_failed"
         )
         return _finish(
-            update | {"agent_error": AgentError(agent="orchestrator", message=message), "dispatched": []},
+            update | {"agent_error": AgentError(agent="orchestrator", message=message), "dispatched": [],
+                      "warnings": ["orchestrator failed; completed state is retained for recovery."]},
             "recovery", "guardrail: orchestrator failure requires recovery",
         )
 

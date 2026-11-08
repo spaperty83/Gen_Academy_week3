@@ -97,3 +97,12 @@ def test_model_places_and_non_food_categories_are_supported():
         ]
     ]
     assert has_enough(candidates, trip)
+
+
+def test_one_place_cannot_satisfy_both_category_pools():
+    trip = request(days=1, pace="relaxed", interests=[])
+    assert not has_enough([
+        {"name": "Alpha", "category": "sight"},
+        {"name": "Beta", "category": "sight"},
+        {"name": "Alpha", "category": "food"},
+    ], trip)

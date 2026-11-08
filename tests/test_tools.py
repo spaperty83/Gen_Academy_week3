@@ -73,11 +73,6 @@ def test_read_failure_modes(tool, args, mode, error, mocked_services):
     mocked_services.extract.assert_not_called()
 
 
-def test_write_failure_mode(approved, monkeypatch):
-    writer = Mock()
-    monkeypatch.setattr(export, "write_export", writer)
-    assert invoke(tools.save_itinerary, approved, "write")["error"] == "write_failed"
-    writer.assert_not_called()
 
 
 def test_search_evidence_and_timeout(mocked_services):

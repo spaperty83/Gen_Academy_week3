@@ -193,6 +193,9 @@ def test_food_only_merge_keeps_every_sight_and_dedupes_sources(fake_agents, fact
     extra = places[2].model_copy(update={
         "source_id": "food-extra", "source_url": "https://another.example.org/gamma",
     })
+    registry = registry | {"food-extra": SourceRecord(
+        url=extra.source_url, retrieved_at=extra.retrieved_at, text=extra.evidence_quote,
+    )}
     state = {
         "places": places, "dispatched": ["food"], "research_round": 4,
         "food_result": ResearchResult(status="ok", places=[places[2], extra], round_id=4),
@@ -266,10 +269,11 @@ def test_save_independently_rejects_invalid_approval(graph, monkeypatch, change)
     writer.invoke.assert_not_called()
 
 
-def test_export_failure_retry_preserves_approval_and_counters(graph):
+def test_export_failure_retry_preserves_approval_and_counters(graph, monkeypatch):
+    fail_next_export(monkeypatch)
     initial = workflow.start_trip(graph, REQUEST, "retry-export")
     failed = workflow.resume_trip(
-        graph, initial["thread_id"], "approve", draft_version=1, failure_mode="write",
+        graph, initial["thread_id"], "approve", draft_version=1,
     )
     assert paused(failed)["kind"] == "export_failed"
     assert failed["approved_version"] == 1 and failed["decision"] == "approve"
@@ -279,6 +283,7 @@ def test_export_failure_retry_preserves_approval_and_counters(graph):
     assert done["saved_path"]
     assert (done["round_steps"], done["trip_steps"]) == counters
     assert export.export_is_complete(str(done["saved_path"]).removesuffix(".json"))
+
 
 
 def test_trip_cap_rejects_retry_then_allows_new_trip(graph, fake_agents):
@@ -353,19 +358,21 @@ def test_streams_native_interrupt_chunks_with_kind(graph):
 
 
 @pytest.mark.parametrize("kind", ["approval", "export_failed", "recovery"])
-def test_cancel_from_each_pause_never_exports(graph, fake_agents, kind):
+def test_cancel_from_each_pause_never_exports(graph, fake_agents, kind, monkeypatch):
+    fail_next_export(monkeypatch)
     if kind == "recovery":
         fake_agents[1]["planner_error"] = True
     initial = workflow.start_trip(graph, REQUEST, f"cancel-{kind}")
     if kind == "export_failed":
         initial = workflow.resume_trip(
-            graph, initial["thread_id"], "approve", draft_version=1, failure_mode="write",
+            graph, initial["thread_id"], "approve", draft_version=1,
         )
     assert paused(initial)["kind"] == kind
     result = workflow.resume_trip(graph, initial["thread_id"], "cancel")
     assert result["cancelled"] is True and result["saved_path"] is None
     assert result["approved_version"] is None
     assert not graph.get_state(config(initial["thread_id"])).next
+
 
 
 def test_diagram_contains_all_required_nodes(graph, tmp_path):
@@ -396,7 +403,8 @@ def test_cli_displays_draft_sources_findings_and_exports(fake_agents, tmp_path, 
 
 
 @pytest.mark.parametrize("kind", ["approval", "recovery", "export_failed"])
-def test_list_trips_reports_each_pending_pause_kind(fake_agents, kind):
+def test_list_trips_reports_each_pending_pause_kind(fake_agents, kind, monkeypatch):
+    fail_next_export(monkeypatch)
     saver = InMemorySaver()
     graph = workflow.build_graph(saver)
     if kind == "recovery":
@@ -404,11 +412,12 @@ def test_list_trips_reports_each_pending_pause_kind(fake_agents, kind):
     result = workflow.start_trip(graph, REQUEST, f"listed-{kind}")
     if kind == "export_failed":
         result = workflow.resume_trip(
-            graph, result["thread_id"], "approve", draft_version=1, failure_mode="write",
+            graph, result["thread_id"], "approve", draft_version=1,
         )
     assert workflow.list_trips(graph, saver)[0]["paused_at"] == kind
     workflow.resume_trip(graph, result["thread_id"], "cancel")
     assert workflow.list_trips(graph, saver) == []
+
 
 
 def test_recovery_retry_clears_error_and_can_complete(graph, fake_agents):
@@ -435,10 +444,11 @@ def test_human_revision_runs_only_after_resume_and_invalid_patch_pauses_again(gr
     assert revision.call_count == 1
 
 
-def test_export_failed_rejects_non_export_action_without_counting_steps(graph):
+def test_export_failed_rejects_non_export_action_without_counting_steps(graph, monkeypatch):
+    fail_next_export(monkeypatch)
     initial = workflow.start_trip(graph, REQUEST, "invalid-export-action")
     failed = workflow.resume_trip(
-        graph, initial["thread_id"], "approve", draft_version=1, failure_mode="write",
+        graph, initial["thread_id"], "approve", draft_version=1,
     )
     rejected = workflow.resume_trip(graph, initial["thread_id"], "retry")
     assert paused(rejected)["kind"] == "export_failed"
@@ -446,6 +456,7 @@ def test_export_failed_rejects_non_export_action_without_counting_steps(graph):
     assert (rejected["trip_steps"], rejected["round_steps"]) == (
         failed["trip_steps"], failed["round_steps"],
     )
+
 
 
 def test_city_tags_are_set_after_parsing(graph, monkeypatch, fake_agents):
@@ -462,3 +473,18 @@ def test_city_tags_are_set_after_parsing(graph, monkeypatch, fake_agents):
     assert seen[0]["run_name"] == "trip-Lisbon"
     assert seen[0]["tags"] == ["travel-planner", "Lisbon", "thread:tagged-trip"]
     assert "failure_mode" not in rebuilt.get_state(config("tagged-trip")).values
+
+
+def fail_next_export(monkeypatch):
+    """Mock a disk failure, never add a nonstandard production failure_mode."""
+    original = export._write_pair
+    attempts = 0
+
+    def write_pair(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("Mocked export disk failure")
+        return original(*args)
+
+    monkeypatch.setattr(export, "_write_pair", write_pair)

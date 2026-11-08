@@ -14,11 +14,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from pydantic import BaseModel, ValidationError
 
-from src.evidence import registry_entries
+from src.evidence import normalize_name, registry_entries
 from src.state import SourceRecord
 
 
@@ -100,6 +101,8 @@ class SpecialistRun(AgentMiddleware):
         budget: int,
         *,
         strict_tools: bool = False,
+        optional_tools: set[str] | None = None,
+        spotcheck_targets: list[dict[str, Any]] | None = None,
         search_first: bool = False,
         read_limit: int | None = None,
         weather_request: dict[str, Any] | None = None,
@@ -109,6 +112,8 @@ class SpecialistRun(AgentMiddleware):
         self.allowed = {tool.name for tool in tools}
         self.budget = budget
         self.strict_tools = strict_tools
+        self.optional_tools = optional_tools or set()
+        self.spotcheck_targets = spotcheck_targets[:3] if spotcheck_targets is not None else None
         self.search_first = search_first
         self.read_limit = read_limit
         self.weather_request = weather_request
@@ -119,7 +124,10 @@ class SpecialistRun(AgentMiddleware):
         self.read_calls = 0
         self.validation_reasks = 0
         self.tool_failed = False
+        self.failed_tools: set[str] = set()
         self.tool_messages: list[ToolMessage] = []
+        self.progress_writer: Callable[[Any], None] | None = None
+        self.agent_name = ""
         self._lock = Lock()
 
     def _reask(self, _: Exception) -> str:
@@ -193,11 +201,30 @@ class SpecialistRun(AgentMiddleware):
                 ):
                     raise ToolExecutionFailed("Read-page policy violated")
         try:
+            if self.spotcheck_targets is not None:
+                arguments = request.tool_call["args"]
+                if name == "read_page":
+                    allowed = any(arguments.get("url") == target["source_url"]
+                                  for target in self.spotcheck_targets)
+                else:
+                    query = " " + normalize_name(str(arguments.get("query", ""))) + " "
+                    allowed = any(
+                        " " + normalize_name(target["place_name"]) + " " in query
+                        for target in self.spotcheck_targets
+                    )
+                if not allowed:
+                    raise ToolExecutionFailed("Spot-check outside the three selected stops")
             if name == "get_weather" and (
                 self.weather_request is None
                 or request.tool_call["args"] != self.weather_request
             ):
                 raise ToolExecutionFailed("Weather requires the requested dates and city")
+            if self.progress_writer is not None:
+                args = request.tool_call["args"]
+                self.progress_writer({
+                    "kind": "tool_call", "agent": self.agent_name, "tool": name,
+                    "detail": str(args.get("query", args.get("url", args.get("city", ""))))[:240],
+                })
             result = handler(request)
             if not isinstance(result, ToolMessage):
                 raise ToolExecutionFailed("Unsupported tool result")
@@ -209,7 +236,13 @@ class SpecialistRun(AgentMiddleware):
                 }
             # An arbitrary custom tool must not leak error details back to a model.
             if result.status == "error" or data.get("ok") is not True:
-                data = {"ok": False, "data": None, "error": "tool_failed"}
+                code = data.get("error")
+                safe_codes = {
+                    "simulated_failure", "extract_failed", "search_failed", "weather_failed",
+                    "beyond_forecast_window", "weather_unavailable", "city_not_found", "invalid_input",
+                }
+                data = {"ok": False, "data": None,
+                        "error": code if isinstance(code, str) and code in safe_codes else "tool_failed"}
             result = result.model_copy(update={
                 "content": tool_data(data), "artifact": data, "name": name,
             })
@@ -223,7 +256,9 @@ class SpecialistRun(AgentMiddleware):
             self.tool_messages.append(result)
             failed = envelope(result).get("ok") is not True
             self.tool_failed |= failed
-        if failed and self.strict_tools:
+            if failed:
+                self.failed_tools.add(name)
+        if failed and self.strict_tools and name not in self.optional_tools:
             raise ToolExecutionFailed("Research tool failed")
         return result
 
@@ -238,6 +273,12 @@ class SpecialistRun(AgentMiddleware):
         name: str,
     ) -> BaseModel:
         """Build the installed LangChain agent and pass runtime config throughout."""
+        self.agent_name = name
+        try:
+            # Capture the parent workflow writer before entering the child agent.
+            self.progress_writer = get_stream_writer()
+        except RuntimeError:
+            self.progress_writer = None
         agent = create_agent(
             model=model, tools=list(tools), system_prompt=prompt,
             response_format=ToolStrategy(
