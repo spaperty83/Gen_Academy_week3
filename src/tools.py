@@ -110,7 +110,7 @@ def web_search(
             data.append({
                 "source_id": _stamp(url, retrieved_at),
                 "title": item.get("title", ""), "url": url,
-                "content": content, "retrieved_at": retrieved_at,
+                "content": content[:4000], "retrieved_at": retrieved_at,
             })
         return _result(data)
     except Exception:  # noqa: BLE001 - tools are non-raising secret-safe boundaries
@@ -264,3 +264,41 @@ WEATHER_TOOLS = [get_weather]
 
 for _tool in (*SEARCH_TOOLS, *WEATHER_TOOLS, save_itinerary):
     _tool.handle_validation_error = _invalid_arguments
+
+
+def search_city_images(city: str) -> dict[str, Any]:
+    """READ-only display lookup; never an agent tool or workflow evidence."""
+    try:
+        if not isinstance(city, str) or not city.strip() or len(city) > 120:
+            return {"ok": False, "data": [], "error": "invalid_input"}
+        client = get_tavily_client()
+        response = _network(lambda: client.search(
+            query=f"{city.strip()} city landmarks photography", search_depth="basic",
+            max_results=3, include_images=True, include_image_descriptions=True, timeout=15,
+        ))
+        candidates = [(image, None) for image in (response.get("images") or [])]
+        for result in response.get("results") or []:
+            if isinstance(result, dict):
+                candidates.extend((image, result.get("url")) for image in (result.get("images") or []))
+        images, seen = [], set()
+        for candidate, page in candidates:
+            record = candidate if isinstance(candidate, dict) else {"url": candidate}
+            url = record.get("url")
+            if not isinstance(url, str) or not _valid_url(url) or url in seen:
+                continue
+            parsed = urlparse(url)
+            if parsed.username or parsed.password or not parsed.hostname:
+                continue
+            source = record.get("source_url") or page or url
+            if not isinstance(source, str) or not _valid_url(source):
+                source = url
+            description = record.get("description")
+            images.append({"url": url, "source_url": source,
+                           "caption": description[:160] if isinstance(description, str) else f"{city} city photo"})
+            seen.add(url)
+            if len(images) == 2:
+                break
+        return {"ok": True, "data": images, "error": None}
+    except Exception:  # noqa: BLE001 - optional display data must never block a trip.
+        LOGGER.info("City photos unavailable")
+        return {"ok": False, "data": [], "error": "images_unavailable"}

@@ -194,3 +194,12 @@ def test_manifest_version_must_match_export_base(destination, itinerary):
     repaired = export.write_export(itinerary, destination)
     assert repaired["manifest"]["draft_version"] == 2
     assert export.export_is_complete(destination)
+
+
+def test_markdown_includes_approved_weather_note_without_changing_json(destination, itinerary):
+    note = "Forecast for 2026-11-15: Precipitation probability: 2%; Low: 20 C; High: 29 C."
+    itinerary["days"][0]["weather_note"] = note
+    export.write_export(itinerary, destination)
+    assert "Weather: " + note in filename(destination, ".md").read_text(encoding="utf-8")
+    assert json.loads(filename(destination, ".json").read_text(encoding="utf-8")) == itinerary
+    assert export.export_is_complete(destination)

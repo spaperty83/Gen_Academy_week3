@@ -278,3 +278,15 @@ def test_real_search_message_builds_evidence_registry(mocked_services):
 def test_failure_mode_is_not_an_llm_tool_argument():
     assert "config" not in tools.web_search.args
     assert "failure_mode" not in tools.web_search.args
+
+
+def test_search_model_text_matches_checkpoint_evidence_window(mocked_services):
+    from src.evidence import registry_entries
+
+    mocked_services.search.return_value["results"][0]["content"] = "A" * 4000 + " Unretained venue name."
+    message = tools.web_search.invoke(
+        {"name": "web_search", "args": {"query": "Lisbon"}, "id": "window", "type": "tool_call"},
+    )
+    entry = message.artifact["data"][0]
+    assert entry["content"] == "A" * 4000
+    assert registry_entries([message])[entry["source_id"]]["text"] == entry["content"]

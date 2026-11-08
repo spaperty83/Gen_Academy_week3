@@ -83,6 +83,8 @@ def _markdown(itinerary: dict[str, Any]) -> bytes:
     lines = [f"# {itinerary.get('city', 'Travel itinerary')}", ""]
     for index, day in enumerate(itinerary.get("days", []), 1):
         lines += [f"## Day {day.get('day_number', day.get('day', index))}", ""]
+        if day.get("weather_note"):
+            lines += [f"Weather: {day['weather_note']}", ""]
         for stop in day.get("stops", []):
             name = str(stop.get("place_name", stop.get("name", "")))
             note = str(stop.get("note", ""))

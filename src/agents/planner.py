@@ -46,7 +46,14 @@ def _indoor(place: Place) -> bool:
 def _validate_draft(state: TripState, run: SpecialistRun, draft: BaseModel) -> None:
     """Treat violated grounded task constraints as structured validation errors."""
     itinerary = Itinerary.model_validate(draft)
-    if hard_checks(state | {"itinerary": itinerary}):
+    findings = hard_checks(state | {"itinerary": itinerary})
+    if findings:
+        trip = TripRequest.model_validate(state["request"])
+        run.validation_feedback = {
+            "findings": [{"issue": finding.issue, "day": finding.day} for finding in findings],
+            "required_days": trip.days, "required_stops_per_day": stops_per_day(trip.pace),
+            "maximum_food_per_day": food_per_day(trip.interests),
+        }
         raise OutputInvalid("Draft violates grounded itinerary constraints")
     weather = _weather(run)
     if weather is None:
@@ -67,6 +74,9 @@ def _validate_draft(state: TripState, run: SpecialistRun, draft: BaseModel) -> N
         if isinstance(probability, (int, float)) and probability > 60 and any(
             not _indoor(places[normalize_name(stop.place_name)]) for stop in day.stops
         ):
+            run.validation_feedback = {
+                "findings": [{"issue": "rainy day requires recorded indoor places", "day": day.day_number}],
+            }
             raise OutputInvalid("Rainy days require grounded indoor stops")
 
 
@@ -80,7 +90,15 @@ def _weather_notes(
         note = None
         chances = daily.get("precipitation_probability_max", [])
         if index < len(chances):
-            note = f"Forecast precipitation probability: {chances[index]}%."
+            parts = [f"Precipitation probability: {chances[index]}%"]
+            for field, label in (("temperature_2m_min", "Low"), ("temperature_2m_max", "High")):
+                values = daily.get(field, [])
+                if index < len(values) and isinstance(values[index], (int, float)):
+                    unit = (weather.get("units") or {}).get(field, "")
+                    parts.append(f"{label}: {values[index]}{unit}")
+            dates = daily.get("time", [])
+            stamp = f" for {dates[index]}" if index < len(dates) else ""
+            note = f"Forecast{stamp}: " + "; ".join(parts) + "."
         days.append(day.model_copy(update={"weather_note": note}))
     warnings = list(itinerary.warnings)
     if weather is None:

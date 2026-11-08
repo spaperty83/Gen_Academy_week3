@@ -1,325 +1,129 @@
-# Travel planner
+# City trip planner
 
-Python 3.11+ project following AGENTS.md. Configuration, state models, coverage calculations, approval gates, tools,
-evidence validation, exports and live provider checks are implemented. All agent nodes, the checkpointed workflow and the Streamlit UI are implemented.
+My agent helps a traveler plan a city trip in a Streamlit web app, replacing the 3–4 hours of reading travel blogs and juggling tabs it takes today. Five cooperating agents research places, check the weather, build a day-by-day itinerary and critique it on their own using 4 tools, then hand off to the traveler to approve or revise before the final itinerary is exported. I'll know it works when a traveler reaches an approved itinerary that passes every hard check in under 10 minutes for 4 out of 5 test trips.
 
-PowerShell setup:
-    python -m venv .venv
-    .\.venv\Scripts\Activate.ps1
-    python -m pip install -r requirements.txt
-    Copy-Item .env.example .env
+This is the product hypothesis and success target. The 3–4 hour baseline has not been measured here, and the 4/5 live target has not been demonstrated. Current evidence is **428 mocked tests passing, three live tests skipped**. No live evaluation CSV is present; the most recent recorded LangSmith access check returned HTTP 403.
 
-Fill in .env with credentials, the Nebius endpoint and a function-calling model.
-Mocked verification (no network or keys):
-    python -m pytest -q
-    python -m ruff check src tests
+## Agent framework
 
-Live capability checks (use provider credits):
-    python -m scripts.smoke_test
+The field names below follow **Part 2: The Agent Framework**, page 8 of the Week 3 Project Handout (Oct 2026). Each answer describes this project's implementation in one or two sentences.
 
-The smoke test exits nonzero on failure. Structured output uses function calling.
-For live pytest tests, use PowerShell: $env:RUN_LIVE = "1"; in Command Prompt
-(cmd), use: set RUN_LIVE=1. Then run the live tests.
+| Field | Fill in (1 to 2 sentences max) |
+| --- | --- |
+| Agent goal (one line) | Help a traveler reach a source-grounded, Critic-checked city itinerary that they can revise and approve before export. |
+| Where do people use it? | A Streamlit web app, with a CLI alternative for the same checkpointed workflow. |
+| What steps does it take, in order? | 1. Parse the request; 2. research sights and food in parallel and merge accepted evidence; 3. check weather and draft; 4. critique and send back findings as needed; 5. pause for traveler revision or approval; 6. export only the approved checked version. |
+| What can it actually do? | READ: web_search and read_page retrieve Tavily evidence, and get_weather retrieves Open-Meteo forecasts. WRITE: save_itinerary exports local JSON/Markdown plus a manifest, exclusively from the guarded save node after approval. |
+| What does it need to remember? | Per-thread SQLite checkpoints retain current/original requests, places, source receipts, drafts, critiques, versions, counters and the pending pause across sessions until the trip is deleted. Exported files and remote traces have separate lifecycles; secrets are excluded from workflow state. |
+| What should it never do? | Never book, pay, contact anyone, invent places or export an unapproved draft; never offer approval with hard failures. Keep credentials out of logs, checkpoints and traces. |
+| Human-in-the-loop | A checked draft pauses for Approve, Request changes or Cancel before any itinerary export. Recovery offers only allowed repair/cancellation options, while export failure permits Retry export or Cancel without discarding approval. |
+| What happens when something breaks? | Tools use bounded transient-error retries; optional extraction and unavailable weather can degrade to explicit warnings, while agent failures or insufficient coverage reach recovery with completed state preserved. Caps never force approval, and failed exports are repaired through a separate retry pause. |
+| How do you know it worked? | Target: at least 4/5 normal test trips produce complete approved exports that pass every hard check and apply the scripted revision in under 600 seconds. This target remains unmeasured live; simulated approval and LLM usefulness scores do not establish real human acceptance. |
 
+## Architecture
 
+[Generated LangGraph diagram: docs/graph.mmd](docs/graph.mmd). Regenerate it without API keys:
 
-## Streamlit app
+```powershell
+python -m src.graph --diagram
+```
 
-From the project root, with the virtual environment activated and .env filled in:
+START enters the Orchestrator. `Send` dispatches one or both researchers; their branch results join at `merge_research`, then return to the supervisor. Planner and Critic also return to the supervisor. The code gate routes a checked draft to human review and other states to recovery. Approval can reach save; failed writes pause separately for export retry.
+
+| Node | Agent or plain node | Responsibility and tool access |
+| --- | --- | --- |
+| orchestrator | Agent 1: supervisor | Parse request, choose next worker, issue coverage-sized instructions; no operational tools |
+| sights_researcher | Agent 2 | Research sights with web_search/read_page |
+| food_researcher | Agent 3 | Research food with web_search/read_page |
+| planner | Agent 4 | Use accepted places; get_weather only when a start date exists; produce a new draft |
+| critic | Agent 5 plus Python checks | Hard checks, then bounded web_search/read_page spot-checks that add soft findings |
+| merge_research | Plain | Validate current-round receipts, replace dispatched categories, deduplicate, publish evidence and warnings |
+| human_review | Plain interrupt | Display checked draft; approve matching version, revise or cancel |
+| recovery | Plain interrupt | Explain failure and offer only allowed recovery options |
+| save | Plain writer | Recheck approval guard and invoke save_itinerary |
+| export_failed | Plain interrupt | Retry export or cancel while retaining approval |
+| end_cancelled | Plain | End the thread as cancelled |
+
+The four tools are `web_search`, `read_page`, `get_weather` and `save_itinerary`. Only the save node receives the write tool. UI actions use the public [graph API](src/graph.py), including `stream_trip`, `get_trip`, `get_export`, `list_trips` and `resume_trip`.
+
+## Why five agents
+
+The supervisor sees a compact summary and delegates to specialists with separate tools and budgets. Sights and food research can run in parallel. Each branch writes only its own ResearchResult; one merge replaces only dispatched categories, so food-only research preserves sights. Results from an old research_round are ignored; normalized names are deduplicated and extra URLs retained.
+
+The Critic separates Python hard checks from model judgment. Findings have an owner (researchers or planner), allowing send-backs before the exact new draft is checked again. Python guardrails replace invalid routes and log `guardrail:` reasons; prompts alone do not authorize planning or export.
+
+Coverage controls research size rather than relying on a fixed handful of suggestions:
+
+| Quantity | Rule |
+| --- | --- |
+| Stops/day | relaxed 3; normal 4; packed 5 |
+| Food/day | 2 when food is an interest, otherwise 1 |
+| Needed per category | Per-day count times trip days; other stops belong to sights |
+| Research target | ceil(needed times 1.3) |
+| Tool budget per researcher | min(14, max(8, ceil(target / 3))) |
+
+A seven-day packed food trip needs 21 sights and 14 food places; targets are 28 and 19, giving tool budgets 10 and 8. The Planner cannot run until both pools meet needed coverage. [Coverage tests](tests/test_coverage.py) check these rules. This architecture's speed and quality advantage over a single agent has not been measured.
+
+## Approval, recovery and export
+
+Approval requires a draft, `critique_version == draft_version`, no hard failures and no agent_error. Hard failures include invalid schema, a stop outside accepted places, invalid evidence, wrong day count, pace-limit violations or duplicate stops. Soft findings include unavailable weather, uncertain spot-checks, thin interest coverage or a possibly unmet budget preference. Soft findings remain visible and can coexist with approval.
+
+Caps are 12 supervisor steps per revision round, 30 per trip, two correction cycles per round and two dispatch attempts per researcher per round. **Caps never force approval.** The gate still decides whether a checked draft can be shown. Recovery normally offers Revise / Retry / Cancel; at the trip cap it offers only New trip / Cancel. Retry clears an agent error and forwards findings; it does not reset exhausted research attempts or caps. Revise resets round limits. Expected and unexpected agent failures become sanitized agent_error updates; researchers return failed results so a sibling's work survives.
+
+Both save and save_itinerary enforce `decision == approve` and non-null `approved_version == draft_version == critique_version`, with no hard failures. Stale or unchecked approval cannot export. JSON and Markdown are staged, renamed, then the SHA-256 manifest is written last. A lone file is incomplete. Retry repairs incomplete bundles; export retries consume no supervisor steps. Destinations must remain inside outputs/. The UI's complete badge/download require a valid current bundle matching the approved itinerary.
+
+## Evidence and its limits
+
+Only real tool-response messages in a workflow populate the checkpoint's source registry: source_id maps to URL, retrieval timestamp and at most 4,000 characters of text. Candidates need a registered source_id, an exactly matching source URL, a quote containing the normalized name, and a whitespace-normalized quote found in the saved source text. Name matching strips accents, punctuation and generic venue words. [Evidence tests](tests/test_evidence.py) exercise forged IDs, URLs, names and quotations.
+
+This proves textual provenance against a retrieved response. It does not establish that a venue is open, prices are current, reservations are available, travel distances are practical, or the source is truthful. Use the wording **budget preference considered**. The export disclaimer says: "Places were checked against their source pages; opening hours and prices may have changed."
+
+Tool text is untrusted and wrapped in escaped `<tool_data>`. Instruction-like evidence is rejected; the mocked Place X injection scenario checks it never reaches accepted places, stops or exported JSON. That regression test is not a general guarantee against every prompt injection. There is no vector store, embedding pipeline or RAG. Checkpoints retain request and evidence data per thread until deletion; never put keys in state. Deleting checkpoints does not delete exports or any remote traces.
+
+## Revisions
+
+A structured RequestPatch is validated and applied to current request before dependent state is cleared. original_request stays unchanged. Invalid patches only add a rephrase warning. [Revision tests](tests/test_orchestrator.py) include Paris replacing Lisbon, dates, length, interests, budget and pace.
+
+| Change | Cleared/refreshed |
+| --- | --- |
+| City | All places, branch results, source registry, accumulated warnings, weather, itinerary, critique and approval; research both new-city categories |
+| Start date or days | Weather, itinerary, critique and approval; replan, with coverage guards still enforced |
+| Interests | Affected pool's places plus itinerary, critique and approval; food-interest edits refresh food, other interest edits refresh sights |
+| Budget | Both category pools plus itinerary, critique and approval |
+| Pace or stop order | Itinerary, critique and approval; retained places may need additional research to meet new coverage |
+
+Valid revisions reset round_steps, correction_cycles and researcher_attempts; trip_steps and draft_version never decrease. City changes use LangGraph Overwrite to clear accumulated registry and warnings. Notes remain in human_feedback for subsequent work.
+
+## Setup, run and resume
+
+Python 3.11+; run from the project root. PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Copy only when creating .env initially; preserve an existing credential file. Fill in NEBIUS_API_KEY, NEBIUS_BASE_URL, NEBIUS_MODEL (tool calling and structured output required), TAVILY_API_KEY and, for tracing/evaluation, LANGSMITH_API_KEY. LANGSMITH_TRACING and LANGSMITH_PROJECT configure tracing. Keys are validated when a service is used. Existing shell variables take precedence over .env. Credentials and generated SQLite files are ignored by Git.
 
 ```powershell
 python -m streamlit run src/app.py
 ```
 
-Open the local URL printed by Streamlit (normally http://localhost:8501).
-The graph and SQLite checkpointer are created once with st.cache_resource.
-Browser session state holds the current thread and screen; checkpoints.sqlite
-keeps paused trips across app/server restarts. New trip always uses a fresh UUID.
+Open the URL Streamlit prints, normally http://localhost:8501. Try "1 day in Lisbon, relaxed, history". Add a real ISO start date to request weather. Review sources and soft findings, request a change, then approve the displayed version. The graph/checkpointer are cached once; buttons are disabled during work. New trip creates a fresh thread UUID.
 
-The sidebar lists paused trips as city, last update and pause kind. Open loads
-that saved thread without starting or resuming work. Demo failure mode is passed
-per action as runtime config: None, extract, tavily, weather or llm_json. Include
-a start date to exercise weather calls. llm_json makes one initial draft parse
-fail so the single re-ask can repair it.
+**Resume trip:** leave a trip paused, stop the app, restart it from the same project directory, select its city / last update / pause kind in the sidebar and click Open. SQLite checkpoints.sqlite restores the same pending thread. Opening is read-only; an action resumes it. Clarification ends the vague thread; start a new trip with the corrected request.
 
-While work runs, all action buttons are disabled and st.status streams one line
-per update/tool call. Queries come from actual tool-call events, not reconstructed
-source text. A normal rerun or browser refresh never replays a start or approval.
-Persisted delegation decisions can be reopened; detailed tool progress is transient.
-
-Approval displays the numbered, Critic-checked draft, soft findings, sources,
-budget preference considered, and the delegation log. Approve & export sends
-the exact displayed draft version. Request changes and Cancel resume the same
-thread. Recovery displays only the backend options and never has an Approve
-button. At the trip cap those options are only New trip and Cancel.
-
-Export failure retains approval and offers Retry export / Cancel. Done shows the
-export path, but the complete badge and Markdown download require a valid on-disk
-manifest and both current file hashes. A metadata-only or subsequently modified
-export gets no badge or download. Cancellation shows Trip cancelled.
-
-The UI imports only public functions from src/graph.py. The added read-only APIs
-get_trip(graph, thread_id) and get_export(graph, thread_id) open a saved pause and
-return validated download bytes respectively. stream_trip adds progress chunks
-for actual tool calls while preserving the native __interrupt__ format. No
-credentials or raw provider/database exception text are shown in the UI.
-
-### Two-minute manual check
-
-Allow about two minutes of interaction, excluding model/search response time.
-
-1. **Happy path + one revision:** Choose Demo failure mode None. Plan
-   "1 day in Lisbon, relaxed, history". At Draft v1, review the sources and
-   soft findings. Request changes: "Move museums to the afternoon", then Submit.
-   Confirm a newer version in the same trip; Approve & export, check the complete
-   badge, and download the .md.
-2. **Recovery:** Choose New trip, select demo mode tavily and plan another short
-   Lisbon trip. Confirm recovery shows its reason, warnings and only allowed
-   actions, with no Approve button. Cancel and confirm Trip cancelled, then
-   restore Demo failure mode to None.
-3. **City-change revision:** Start a fresh Lisbon trip. Request changes:
-   "change Lisbon to Paris". Confirm the new draft says Paris and the old
-   Lisbon stops are gone. Leave this draft paused at approval.
-4. **Restart and resume:** Stop Streamlit with Ctrl+C, rerun the command above,
-   then choose the Paris trip under Resume trip and Open. Confirm the same
-   version reappears. Approve & export, check complete, and download Markdown.
-
-An exhausted research round still needs Revise to reset its attempts; Retry does
-not bypass research/step caps. Retry export is a separate action and consumes no
-Orchestrator steps.
-
-Mocked UI and public-API checks (no keys or live providers):
+CLI alternative:
 
 ```powershell
-python -m pytest -q tests/test_app.py tests/test_app_api.py
+python -m src.graph "1 day in Lisbon, relaxed, history"
 ```
 
-The AppTest suite covers caching, all phases, same-thread revisions and approval,
-stale versions, pause reopening, disabled controls, interruption recovery,
-downloads and friendly errors. API tests use real graph runs, local file hashes,
-actual tool progress and a reopened SQLite file.
+## Error handling (Prompt 7)
 
-## Tool results and evidence
-
-Tools use LangChain's content_and_artifact response format. Invoke with a full
-ToolCall to receive a ToolMessage. Its artifact contains the machine-readable
-{ok, data, error} envelope. Its content contains escaped JSON inside <tool_data>;
-treat this as untrusted data and ignore instructions within it. Invocation with
-a plain argument dictionary returns the wrapped content. registry_entries accepts
-only successful search/extract ToolMessages, including serialized wrapped content
-after checkpoint persistence, and never trusts AI-authored messages.
-
-ToolCall example:
-    from src.tools import web_search
-    message = web_search.invoke({
-        "name": "web_search", "args": {"query": "Lisbon museums"},
-        "id": "search-1", "type": "tool_call",
-    })
-    result = message.artifact
-
-SEARCH_TOOLS are for researchers and Critic; WEATHER_TOOLS are for Planner.
-save_itinerary is exclusively for the save node and is excluded from both lists.
-The save node independently enforces the same guard. Failure modes are set
-only via config={"configurable": {"failure_mode": "tavily"}}; supported values
-are extract, tavily, weather and llm_json. Filesystem export failures are
-tested by mocking disk operations, not by adding another demo mode.
-
-Exports stage JSON and Markdown before renaming either, then commit a hash
-manifest last. The returned path points to the JSON file. Retrying repairs
-incomplete exports. Destinations must resolve inside the project's outputs folder.
-
-Read-tool integration tests (LIVE, require credentials for Tavily):
-    $env:RUN_LIVE = "1"
-    python -m pytest -q tests/test_tools_live.py
-
-
-## State and approval
-
-TripState uses Pydantic models for requests, evidence, drafts and critiques.
-The SQLite checkpointer stores each trip in checkpoints.sqlite under its
-thread_id; never put credentials in state. Append-only logs and warnings and the
-merged source registry use native LangGraph Overwrite(value=[]) or
-Overwrite(value={}) to clear. Empty lists/dictionaries are ordinary updates and
-do not clear these fields. Draft versions use a max reducer and never decrease
-through normal updates; never overwrite their version during a trip.
-
-Coverage counts unique normalized place names: sight/activity/other form the
-sights pool, and food forms the food pool. A food interest requires two food
-stops per day. Approval requires a schema-valid draft, a current critique,
-no hard failures and no agent_error. Limits never force approval; at 30 trip
-steps, recovery offers new_trip or cancel instead of retry.
-
-
-## Specialist nodes
-
-src/agents/researchers.py exposes make_researcher("sights"|"food").
-src/agents/planner.py exposes planner(state, config), and critic.py exposes
-critic(state, config). Prompts live in src/agents/prompts.py. All use the installed
-LangChain 1.x create_agent constructor with the native get_llm() model.
-
-Research instructions accept JSON, for example:
-    instructions["sights"] = '{"target": 28, "tool_budget": 10}'
-    instructions["food"] = '{"target": 19, "tool_budget": 8}'
-
-Labeled prose such as "target: 28; tool_budget: 10" is also accepted. A supplied
-target uses coverage.tool_budget(target); missing budget/target instructions use
-the eight-call fallback. Researchers search first, read at most two pages, and
-keep only quotes validated against their own successful tool receipts.
-
-Planner uses only weather tools (none when start_date is absent) and enforces
-coverage, grounded stops, days, pace and food limits in code. Rain above 60%
-requires indoor cues in recorded place data. Missing weather stays unavailable.
-Successful planning increments the draft version and clears approved_version.
-failure_mode="llm_json" in runtime configurable settings simulates one initial
-parse failure without changing the native model or stacking provider retries.
-
-Critic always preserves Python hard checks and the draft version it checked.
-Its model can add only soft findings; failed source checks add one uncertainty
-finding. The source registry in the checkpoint is enough to repeat evidence checks.
-
-Each researcher writes only its own ResearchResult. Its sources and warnings
-travel inside that result; merge_research publishes shared evidence and warnings
-once, and revalidates candidates before replacing dispatched categories.
-Each invocation has its own runtime counters and evidence receipts. Tool budgets
-include all real calls across the one structured-output re-ask; structured response
-schema calls do not consume the external-tool budget. No node-level/provider
-retry wrapper is added. Unexpected errors return sanitized boundary failures.
-
-Mocked specialists exercise the real create_agent graph with fake models/tools:
-    python -m pytest -q tests/test_agents.py
-
-
-## Orchestrator and revisions
-
-src/agents/orchestrator.py exposes orchestrator(state, config),
-validate_decision(state, decision), compact_summary(state), and
-apply_revision(state, feedback, config=None). The supervisor has no operational
-tools. It uses with_structured_output with function calling for initial parsing,
-routing and patches, with one validation re-ask and no added provider retries.
-
-Initial parsing records city uncertainty and checks that the chosen city occurs
-in the traveler's input; vague, missing, misspelled or ambiguous destinations ask
-for clarification. Routing sees only the CURRENT request and compact counts,
-never the original request, old city places or source bodies. Initial defaults
-for omitted non-city preferences are 3 days, mid budget and normal pace.
-
-Research dispatches receive generated JSON instructions with the current city,
-coverage targets and tool budgets. Branch attempts and research_round advance
-only on actual supervisor dispatch. delegation_log contains {step, next, reason}
-records. Guardrail replacements start with "guardrail: ". Steps count supervisor
-visits, saturate at their limits and never count export retries; limits and
-traveler choices always use the approval gate.
-
-Revision patches are validated atomically before applying dependency clears:
-city clears all research, evidence, weather and draft state; dates/days clear
-weather and draft state; non-food interest edits refresh sights, food-interest
-edits refresh food, and budget changes refresh both categories. Pace/order edits
-refresh the draft. Other notes remain in human_feedback for specialist prompts.
-City changes use native Overwrite to clear accumulated warnings and evidence.
-
-All valid revisions reset round counters and attempts while preserving
-original_request, trip_steps and draft_version. Invalid revisions only append a
-rephrase warning. Revision next values express routing intent; the graph returns revisions through
-supervisor validation/counting before dispatch and bypasses the supervisor for
-retry_export.
-
-Mocked Orchestrator tests:
-    python -m pytest -q tests/test_orchestrator.py
-
-
-## Persistent graph and CLI
-
-Run from the project root after filling in .env:
-    python -m src.graph "3 days in Lisbon, budget, food and history"
-
-The CLI streams structured delegation-log lines. Approval displays the numbered
-draft, stops, source links and soft findings before asking approve/revise/cancel.
-Recovery displays the reason and allowed actions. Export failure offers
-retry_export/cancel; retries preserve approval and do not consume supervisor steps.
-A new_trip recovery action ends the old thread and prompts for a fresh request.
-
-Generate the local Mermaid diagram without any API keys:
-    python -m src.graph --diagram
-
-The generated diagram is [docs/graph.mmd](docs/graph.mmd).
-
-Public Python API:
-    from src.graph import (
-        get_checkpointer, build_graph, start_trip, resume_trip,
-        stream_trip, list_trips, delete_trip,
-    )
-    saver = get_checkpointer("checkpoints.sqlite")
-    graph = build_graph(saver)
-    result = start_trip(graph, "1 day in Lisbon, relaxed, history")
-    thread_id = result["thread_id"]
-    pending = list_trips(graph, saver)
-    # When paused for approval, use the displayed draft version:
-    result = resume_trip(graph, thread_id, "approve", draft_version=1)
-    saver.conn.close()
-
-start_trip and resume_trip return state plus thread_id and screen. The screen
-contains kind, options and warnings for pauses and terminal outcomes; it is a
-view of state, not additional checkpoint state. Native pause entries are
-in result["__interrupt__"]; each Interrupt.value is a dictionary with kind
-approval, recovery or export_failed. stream_trip yields node-update chunks with
-thread_id and the same native "__interrupt__" format. Resume streaming with
-stream_trip(graph, thread_id=..., decision=..., draft_version=..., feedback=...).
-
-Reopen the same SQLite file with a new saver/graph after restarting the process.
-list_trips lists only threads with pending task interrupts, with thread_id, city,
-last_update and paused_at. delete_trip uses the saver delete_thread API to remove
-checkpoints; exported files remain. The caller owns and closes saver.conn.
-
-Runtime configuration carries thread_id and failure_mode, never credentials.
-Runs use trip-{city} and tags travel-planner, city and thread:{id}. Initial parsing
-uses pending until the city is known; subsequent agents and resumes use the
-current city. The graph contains no node-level RetryPolicy.
-
-Research Send branches run in parallel and coalesce into one merge per batch.
-Only dispatched pools are replaced; an ignored stale round never erases existing
-places. The merge deduplicates names, attaches extra source URLs, records failed
-or empty branches, and clears both transient branch fields.
-
-Mocked graph tests use fake agents, real LangGraph interrupts, actual temporary
-SQLite files and local exports, including close/reopen restart coverage:
-    python -m pytest -q tests/test_graph.py
-
-Full mocked validation:
-    python -m pytest -q
-    python -m ruff check src tests
-
-
-## Failure behavior review
-
-The review covers approval/version guards, agent boundaries, parallel merge,
-coverage, evidence, revisions, atomic export, retry placement and untrusted data.
-The existing approval and revision rules remain enforced. Schema instances are
-revalidated, coverage cannot count one venue in two pools, and export manifests
-must match the filename's draft version as well as both file hashes.
-
-Optional page extraction can fail while successful search snippets remain usable.
-Research stays branch-local until merge; successful sibling results survive a
-failed branch. Critic spot-check queries/pages are restricted in code to at most
-three selected stops and two extracted pages. Missing weather and failed checks
-always become soft uncertainty, even if the model omits them.
-
-Source text stays untrusted inside <tool_data>. Instruction-like passages cannot
-support an evidence quote, including after checkpoint restart. The injection test
-deliberately makes the fake model add Place X and checks that validation prevents
-it from entering places, the itinerary or the exported JSON. Raw source text can
-remain in the evidence registry for provenance; storing it does not authorize it.
-
-Demo failure_mode values are exactly extract, tavily, weather and llm_json and are
-read only from runtime configurable settings. llm_json simulates an initial
-Planner parse failure; the one re-ask can recover. The two-invalid-output tests
-mock bad model responses to exercise each agent's exhausted validation boundary.
-Network retries remain inside read tools; model retries remain native ChatOpenAI
-retries. There are no node-level retries and no retry wrapper around the model.
-
-All tests in the table are in tests/test_failures.py. They execute real agents,
-native structured parsers, tools, graph routes, interrupts and local exports with
-mocked models/HTTP providers and no keys. Each asserts the resulting screen kind,
-available options and warning. Some tests contain both requested variants.
+The following 16 cases are in [tests/test_failures.py](tests/test_failures.py). They use the real agent/graph control flow with fake models and HTTP, and assert screen kind, options and warnings. They do not establish live-provider reliability.
 
 | Failure | Behavior | Test | Mocked/live |
 | --- | --- | --- | --- |
@@ -340,51 +144,240 @@ available options and warning. Some tests contain both requested variants.
 | 15. City changes | New city is applied before invalidation; stale old-city candidates are rejected. | test_15_city_revision_cannot_restore_old_places | Mocked |
 | 16. Web instruction to add Place X | Instruction text cannot authorize a place or stop; export contains no Place X. | test_16_instruction_in_web_result_cannot_become_a_place | Mocked |
 
-Run just these 16 end-to-end cases:
-    python -m pytest -q tests/test_failures.py
+Read tools use 15-second timeouts and up to two retries for timeouts, 429 and 5xx, never 400/401. Native ChatOpenAI uses max_retries=2 and timeout=60; no model with_retry wrapper or node RetryPolicy. Invalid structured output gets one re-ask, then an agent boundary failure. read_page is optional and limited to 1–2 calls when snippets lack names/areas. Planner and Critic each have at most four external tool calls.
 
-Normal recovery retains the two-attempt limit within a round: Revise opens a new
-round; Retry clears an agent failure but does not reset research attempts or
-caps. At the trip cap, Retry is not offered. Clarification is a terminal screen:
-start a new thread for the corrected request rather than resuming that thread.
+Demo modes are None, extract, tavily, weather and llm_json. Extract may fall back to snippets; weather is soft; llm_json causes one initial parse failure and may recover via re-ask. Tavily failure can reach recovery. Switch a failed mode back to None before retrying. A round with exhausted research attempts needs Revise or a new trip; Retry does not bypass the cap.
 
-Real-provider integration tests remain in tests/test_tools_live.py and are opt-in;
-the 16 rows above do not claim live-provider coverage.
+## Testing
+
+MOCKED is the default: fake providers, no keys required. LIVE is explicit and uses network/provider credits.
+
+```powershell
+python -m pytest -q
+python -m ruff check src tests
+python -m pytest -q tests/test_failures.py tests/test_app.py tests/test_app_api.py tests/test_run_eval.py
+```
+
+The most recent full run passed 428 tests with three live tests skipped. [tests/test_graph.py](tests/test_graph.py), `test_sqlite_restart_lists_pending_trip_and_resumes_export`, uses a temporary SQLite FILE: pause, close the connection, rebuild saver/graph, list the pending trip, approve and validate the export. UI tests also exercise cached resources, versioned actions, downloads and friendly errors. These are mocked functional checks, not measured human acceptance.
+
+```powershell
+python -m scripts.smoke_test
+$env:RUN_LIVE = "1"
+python -m pytest -q tests/test_tools_live.py
+Remove-Item Env:RUN_LIVE
+```
+
+The environment assignment above is PowerShell syntax; Command Prompt uses `set RUN_LIVE=1`. The smoke test checks Nebius answers, tool calling, structured output and Tavily search/extract. Real read-tool tests are opt-in.
+
+## Evaluation and results
+
+```powershell
+python -m scripts.run_eval --check-langsmith
+python -m scripts.run_eval
+```
+
+The first command is a read-only LangSmith access check. HTTP 401 indicates rejected authentication; 403 indicates forbidden access. Check key permissions, workspace membership, optional LANGSMITH_WORKSPACE_ID and the region configured by LANGSMITH_ENDPOINT. A successful read check does not establish write permissions. The last recorded check returned 403; no completed live experiment is claimed.
+
+The live runner synchronizes travel-planner-eval without duplicating exact inputs and evaluates five normal trips (Lisbon, Porto, Paris, Kyoto, Rome) plus a vague request. Each normal trip has one fitting scripted revision. It uses a fresh in-memory checkpoint, inspects pause kind, revises the first approval, approves a subsequent matching checked version, cancels recovery, retries export once, and caps pause responses at six.
+
+A normal case succeeds only if the complete on-disk export equals the approved JSON, hard checks pass, the Nebius judge says the revision was applied, and agent time is below 600 seconds. First draft below 300 seconds and delegation are secondary. Usefulness is separately judged 1–5; an optional secondary pass rate uses >=3. A model's rating or simulated approval **is not real human acceptance**. Timers exclude dataset setup and judging.
+
+The runner writes `outputs/eval_results.csv` with date, experiment URL, per-case outcomes, pause kinds, timing, usefulness, failure reasons and summary rates. It labels results **SIMULATED WORKFLOW (live APIs, automatic approval)** and **5 cases — preliminary**. This file is currently absent; no average time, usefulness score or 4/5 success is reported as measured. Upload or share the generated CSV only after a real run. Human review and a larger varied set remain future work.
+
+## Sample itinerary bundles
+
+No live exports existed when this documentation was prepared. These two bundles were produced by the existing mocked graph harness, passed its simulated versioned approval, and were copied byte-for-byte with manifests. **They are synthetic test fixtures, not destination recommendations or evidence of live research.** Their `.test` source links and fixture venue names are deliberately artificial. See [sample provenance](outputs/samples/README.md); an inherited export disclaimer does not turn fixture receipts into real source pages.
+
+| Mocked sample | Markdown | JSON | Manifest |
+| --- | --- | --- | --- |
+| Lisbon, first checked draft | [Itinerary](outputs/samples/mock_lisbon_v1.md) | [Data](outputs/samples/mock_lisbon_v1.json) | [Hashes](outputs/samples/mock_lisbon_v1.manifest.json) |
+| Paris after city revision | [Itinerary](outputs/samples/mock_paris_revision_v2.md) | [Data](outputs/samples/mock_paris_revision_v2.json) | [Hashes](outputs/samples/mock_paris_revision_v2.manifest.json) |
+
+Replace or supplement these with 2–3 actual traveler-approved live bundles when available; copy all three files together and preserve their bytes and `_vN` filename version.
+
+## How I used Codex
+
+[PROMPTS.md](PROMPTS.md) records requests and one-line outcomes. Work progressed through state/coverage/gates, specialists, supervision/revisions, graph persistence, a failure review, Streamlit and evaluation. Git records an initial implementation (`4e4ac78`, 2026-11-04), then UI/failure/evaluation changes (`7b17d7f`, 2026-11-07). Prompt-log entries provide finer detail than those two commits; they are not separate commits.
+
+Codex wrote and revised code, ran mocked checks, and added diagnostics after the observed LangSmith 403. Model suggestions were constrained by Python checks and tested failure scenarios. The decision to omit RAG is part of the design; the history does not show implementing and then removing it. See the [Google Doc outline](docs/GOOGLE_DOC_OUTLINE.md) and [five-minute demo script](docs/DEMO_SCRIPT.md).
+
+## Limitations and next steps
+
+- Source evidence establishes provenance, not opening hours, current prices, booking availability or geographical feasibility. Weather is unavailable without a start date or outside the forecast window.
+- Live provider quality/latency, the 4/5 target, time saved and human acceptance remain unmeasured here. Fix LangSmith access, run the preliminary evaluation and collect traveler feedback.
+- Coverage, budgets and correction caps bound work but may stop a difficult trip in recovery. Larger trips may need more source diversity or revised coverage policy.
+- Injection defenses cover tested patterns, not all hostile content. Review checkpoint/trace retention and access before shared deployment.
+- SQLite and local exports serve the current app; multi-user deployment, authentication, distance-aware routing and current opening-hour checks are future work. Pin tested dependency versions before distributing a reproducible release.
+- Never book, pay or contact anyone. The traveler retains approval control in the app; the live evaluation uses explicitly labeled simulated approval.
 
 
-### LIVE evaluation (automatic approval)
+### Repairing research evidence failures
 
-Run `python -m scripts.run_eval` from the repository root with Nebius, Tavily,
-and LangSmith credentials in `.env`. This uses paid live APIs and exports real
-files while simulating the traveler: one scripted revision, then approval of a
-matching, Critic-checked version. Recovery is cancelled; an export failure gets
-one retry. Each case uses a fresh in-memory checkpointer and at most six pause
-responses. No Streamlit server is needed.
+Research candidates now receive the existing single validation re-ask when their
+IDs, URLs or exact quotes do not match their own tool receipts. The correction
+includes rejection codes and the retained source text inside untrusted tool_data;
+it shares the original tool budget. Candidates still invalid after that correction
+are dropped, with reason counts in the warning. When minimum category coverage is met and no draft exists, another research
+choice is redirected to Planner rather than exhausting attempts chasing targets.
+This does not relax quote matching,
+injection checks, coverage, approval or the two-dispatch cap.
 
-The runner creates `travel-planner-eval` in LangSmith, appends only missing exact
-examples, and evaluates exactly the six cases in `tests/eval_cases.json`.
-Five normal trips include Porto and a seven-day packed trip; the sixth request
-is deliberately vague. Results include the experiment URL and a dated
-`outputs/eval_results.csv`, labeled **SIMULATED WORKFLOW (live APIs, automatic
-approval)** and **5 cases — preliminary**.
+Search snippets shown to the model are capped at the same 4,000 characters saved
+in the checkpoint, preventing quotes from an unseen-to-validation tail. Restart
+Streamlit after updating the code. For a previously exhausted trip, use New trip,
+or a valid revision to reset round attempts; Retry alone does not reset them.
 
-A normal trip succeeds only when its complete export matches the approved JSON,
-Python hard checks pass, the Nebius judge confirms the revision, and active agent
-time is below 600 seconds. The target is 4/5. The 300-second first-draft measure,
-delegation check, and usefulness score (1–5) are secondary; usefulness pass rates
-use an explicitly secondary threshold of 3/5. Missing judge scores fail the
-required revision check. Timing excludes dataset operations and judging; first
-draft time is captured when the Planner first produces an itinerary. The vague
-case must finish with clarification and is reported separately.
-
-MOCKED runner checks: `python -m pytest -q tests/test_run_eval.py`.
-The live experiment is performed only when you invoke the command above.
+Mocked regression: tests/test_research_recovery.py checks that an incorrect first
+sights quote can be repaired within one dispatch and reach a checked approval
+pause. A targeted live sights-only diagnostic accepted three places without warnings.
+A subsequent live "1 day in Lisbon, relaxed, history" run reached approval with
+three sights, two food places and draft_version=critique_version=1, with no
+evidence-drop warnings or agent error. It stopped without approval or export;
+this single workflow is not a reliability or evaluation success-rate claim.
 
 
-LangSmith setup troubleshooting: `python -m scripts.run_eval --check-langsmith`
-performs only a dataset read check. HTTP 401 means authentication was rejected;
-HTTP 403 means the request is forbidden: check the key's dataset/experiment
-permissions and workspace access. Set `LANGSMITH_WORKSPACE_ID` in `.env` when
-workspace selection is required, and check `LANGSMITH_ENDPOINT` matches your
-account region. Existing shell environment values take precedence over `.env`.
-The check does not validate write permissions or start the paid workflow.
+### Critic tool-budget failures and Retry
+
+A saved app failure was diagnosed as specialist_step_limit_reached in Critic,
+with an existing draft and accepted places preserved. At the external tool budget,
+the runtime now removes read tools from the next model request while retaining
+the structured-response tool, and asks the model to finish with any uncertainty.
+After two extracted pages, read_page is removed while search remains available.
+A model that ignores these restrictions still fails closed into recovery.
+
+Retry after a Critic error now clears critique_version as well as agent_error,
+so a successful new check is required for approval of the saved draft. Restart
+Streamlit, reopen that trip with Resume trip / Open, then select Retry when offered.
+The trip cap still permits only New trip / Cancel. A rejected candidate, a
+coverage-met routing message and unavailable weather are not by themselves fatal;
+agent_error is the blocker in the reported scenario.
+
+Mocked checks in tests/test_critic_recovery.py and tests/test_agents.py cover
+four-call finalization, preserved hard failures and actual rechecking on Retry.
+A live retest of the saved trip was not performed because automatic approval
+review blocked sending checkpointed trip/source data to external providers
+without specific permission. This fix has not been confirmed on that live trip.
+
+
+### Revised drafts must be checked before further research
+
+A local failed beach-interest revision showed draft v2 being sent back to sights
+before Critic had checked it; the extra dispatch then exhausted research attempts.
+Research choices for an existing unchecked draft now route to Critic first, while
+agent errors and overall caps continue to take precedence. Researchers also receive
+human_feedback alongside the updated request and are prompted to target new interests.
+The mocked revision regression in tests/test_critic_recovery.py asserts v2 reaches a
+matching Critic-checked approval without an unnecessary research dispatch, while
+preserving original_request and food research. This is not a live quality claim
+that any particular beach was found. Restart Streamlit before reopening and retrying
+a saved trip; the trip cap still applies.
+
+
+Approval-button integration is checked by tests/test_app_real_workflow.py: actual
+Streamlit buttons drive the real graph through a revision and versioned approval,
+with mocked providers and real local export files. The test requires a complete
+manifest and download, and asserts approval invokes no agents and consumes no
+supervisor steps. This does not reproduce or establish the cause of a separately
+reported live approval error; that report still needs its exact current message.
+
+
+On the exported screen, the export path, completion check and download appear
+first. Weather and other travel advisories remain visible; rejected-candidate,
+guardrail and reached-limit notices are retained under a collapsed Run log
+section as run history. These notices do not indicate export failure. Incomplete
+or modified bundles still receive no complete badge or download.
+
+
+The supervisor cannot repeatedly dispatch Critic for an already approvable draft:
+a repeated Critic choice now routes through the gate to traveler review, with soft
+findings preserved. Agent errors, unchecked versions and hard failures do not use
+this shortcut. A local saved Agra failure exposed several redundant checks of v1
+before a later step-limit error; tests/test_critic_recovery.py reproduces that
+supervisor pattern for both the initial draft and a revision with mocked providers.
+This check avoids redundant work; it does not guarantee live provider reliability.
+
+
+### Display-only city photos
+
+At the draft approval screen, up to two city photos appear above the daily stops,
+with captions and Image source links. They are city inspiration and may not depict
+specific itinerary stops. Photo lookup uses Tavily's image results separately from
+the four agent tools; it adds no model calls and cannot block the approval gate.
+See [Tavily image result options](https://github.com/tavily-ai/skills/blob/main/skills/tavily-best-practices/references/search.md).
+
+The public get_city_images(city) API is read-only and has no trip/checkpointer
+argument. Streamlit caches the returned URLs in that browser session by city:
+ordinary reruns reuse them; new searches, submitted revisions, new draft versions
+and opening another trip clear old photos and trigger a fresh lookup when reviewed.
+No image URLs, captions or image bytes are added to TripState, Itinerary, SQLite
+checkpoints, JSON, Markdown or manifests. Photos use an extra Tavily search when
+not already cached; a restarted browser session may search again. Missing keys,
+failed searches and missing image results leave the itinerary available without
+photos. External image hosts control loading and availability; source links are
+retained, and images are not bundled in downloads.
+
+MOCKED checks: tests/test_city_images.py and tests/test_app.py cover capped and
+deduplicated results, URL filtering, attribution, city changes, cache reuse and
+optional failures. tests/test_app_real_workflow.py displays mocked images through
+the actual UI/graph while asserting they do not enter checkpoints or either export.
+Live image selection/loading has not been tested as part of these checks.
+
+
+Critic's four-call budget also applies within a single model-authored batch.
+A saved Hyderabad failure contained three initial calls followed by two more;
+the excess fifth call previously aborted the review. Optional checking now declines
+that excess call without executing it, records uncertainty, and lets the next model
+turn return its structured critique with no external tools exposed. A model that
+keeps requesting external tools after finalization is still stopped; hard checks
+and agent boundaries remain enforced. Mocked specialist and real-graph regressions
+reproduce the exact three-plus-two pattern without approving or exporting.
+
+
+Weather received from Open-Meteo is shown in each draft day and in a Weather for
+your trip section after export. New weather notes include the forecast date, rain
+probability and low/high temperatures when those values and units are returned.
+New Markdown exports include each approved day's weather_note; JSON already
+retained that field. No forecast values are invented when missing. Previously
+completed export bundles are left unchanged; a newly generated/revised export
+uses this rendering. A local successful Hyderabad trip with start date 2026-11-15
+confirmed weather was retrieved but its earlier Markdown renderer omitted the note.
+
+
+Opening a failed trip is read-only; clicking Retry is a separate action. If a pool
+is still below minimum coverage after both research attempts, recovery explains
+its available/required counts and that Retry cannot reset the limit. Such a Retry
+returns to the pause without model calls or supervisor steps, preserving completed
+work. Use a meaningful revision (for example fewer days or a different pace) to
+open a new round, or use New trip. Other recoverable agent errors keep their normal
+Retry behavior. Research output below minimum coverage now receives the existing
+one correction opportunity with remaining tool budget; it cannot invent places or
+bypass the final coverage gate. Mocked regressions cover both paths.
+
+
+A saved Agra planning failure emitted five alternative Itinerary schema calls in
+one response. Specialists now bind the native model with parallel_tool_calls=False
+(each researcher can still run in parallel with its sibling). Multiple schema
+outputs receive a specific instruction to return exactly one complete response;
+draft day/stop violations receive the actual validation findings and required
+counts during the existing single correction. Persistent invalid output still
+reaches recovery with completed research retained. Mocked regressions reproduce
+five alternative outputs and a corrected full graph run; live behavior is unverified.
+
+
+Technical candidate-rejection, guardrail and reached-limit notices appear in the
+collapsed Run log rather than above the reviewed draft or successful export.
+Critic progress remains in that log too. Material soft findings (such as uncertain
+source confirmation or missing weather), hard failures and active recovery reasons
+remain visible so the traveler can make an informed decision.
+
+The temporary planning status no longer prints detailed streamed lines above the
+result. It is explicitly cleared when work completes; all detailed progress stays
+in the collapsed Run log below the result.
+
+
+Live search progress remains visible in an expanded Run log while work is running.
+On completion its temporary panel is cleared. Dedicated result and log containers
+keep the final itinerary/export above the collapsed Run log on the result screen.
+
+The initial trip request uses a single-line field: press Enter or click Plan trip
+to submit. The revision feedback field remains multiline.

@@ -500,6 +500,7 @@ def test_caps_and_agent_error_do_not_call_model(state, monkeypatch):
 
 
 def test_native_structured_output_for_decision_has_no_operational_tools(state, monkeypatch):
+    state["critique_version"] = None  # this version still needs its first check
     model = ScriptedModel(responses=[structured(OrchestratorDecision, decision("critic"))])
     monkeypatch.setattr(module, "get_llm", lambda: model)
     assert orchestrator(state, {})["next"] == "critic"
@@ -566,3 +567,36 @@ def test_retry_keeps_open_finding_instructions_even_if_model_omits_them(state, m
     use_model(monkeypatch, [decision("planner")])
     result = orchestrator(state, {})
     assert "Fix the duplicated morning stop." in result["instructions"]["planner"]
+
+
+@pytest.mark.parametrize("choice", ["sights", "food", "both"])
+def test_sufficient_coverage_without_draft_plans_instead_of_exhausting_attempts(state, choice):
+    state["itinerary"] = None
+    state["researcher_attempts"] = {"sights": 2, "food": 2}
+    next_agent, reason = validate_decision(state, choice)
+    assert next_agent == "planner"
+    assert reason.startswith("guardrail: coverage met")
+
+
+@pytest.mark.parametrize("choice", ["sights", "food", "both"])
+def test_unchecked_revision_goes_to_critic_before_more_research(state, choice):
+    state["critique_version"] = None
+    state["draft_version"] += 1
+    state["researcher_attempts"] = {"sights": 2, "food": 2}
+    next_agent, reason = validate_decision(state, choice)
+    assert next_agent == "critic"
+    assert reason == "guardrail: check the current draft before dispatching more research"
+
+
+def test_redundant_critic_choice_routes_current_clean_draft_to_traveler(state):
+    state["critique"] = Critique(soft_findings=[Finding(issue="Weather unavailable", owner="planner")])
+    next_agent, reason = validate_decision(state, "critic")
+    assert next_agent == "traveler"
+    assert reason == "guardrail: current draft already checked; request traveler review"
+
+
+def test_redundant_critic_guard_cannot_bypass_hard_failures_or_agent_error(state):
+    state["critique"] = Critique(hard_failures=[Finding(issue="Invalid evidence", owner="researchers")])
+    assert validate_decision(state, "critic")[0] != "traveler"
+    state["agent_error"] = {"agent": "critic", "message": "specialist_step_limit_reached"}
+    assert validate_decision(state, "critic")[0] == "recovery"

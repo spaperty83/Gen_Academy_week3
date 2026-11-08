@@ -39,11 +39,13 @@ class ScriptedModel(FakeMessagesListChatModel):
     """A bindable fake that exercises LangChain's real agent graph and parsing."""
 
     bound_names: list[list[str]] = Field(default_factory=list)
+    bound_options: list[dict[str, Any]] = Field(default_factory=list)
     seen_messages: list[Any] = Field(default_factory=list)
     calls: int = 0
     fail_provider: bool = False
 
     def bind_tools(self, tools, **kwargs):
+        self.bound_options.append(kwargs)
         self.bound_names.append([
             convert_to_openai_tool(tool)["function"]["name"] for tool in tools
         ])
@@ -630,3 +632,145 @@ def test_critic_cannot_investigate_an_unselected_fourth_stop(state, fake_tools, 
     assert result["agent_error"] is None
     assert not fake_tools[0]  # request was blocked before any service/tool execution
     assert sum("uncertain" in finding.issue for finding in result["critique"].soft_findings) == 1
+
+
+@pytest.mark.parametrize("bad_field", ["source_id", "source_url", "evidence_quote"])
+def test_researcher_repairs_evidence_with_one_reask(state, fake_tools, monkeypatch, bad_field):
+    good = state["places"][0]
+    bad = good.model_copy(update={bad_field: "invented unsupported value"})
+    model = use_model(monkeypatch, researchers, [
+        call("web_search", {"query": "Lisbon"}),
+        structured(ResearchCandidates, {"places": [bad.model_dump()]}),
+        structured(ResearchCandidates, {"places": [good.model_dump()]}),
+    ])
+    result = make_researcher("sights")(state, {})["sights_result"]
+    assert result.status == "ok" and result.places == [good]
+    assert model.calls == 3 and len(fake_tools[0]) == 1
+    correction = str(model.seen_messages[-1])
+    assert "rejections" in correction and "sources" in correction
+    assert "Evidence validation details" in correction
+
+
+def test_researcher_persistent_bad_quote_is_dropped_after_one_correction(state, fake_tools, monkeypatch):
+    bad = state["places"][0].model_copy(update={"evidence_quote": "Museum Alpha is an invented claim."})
+    model = use_model(monkeypatch, researchers, [
+        call("web_search", {"query": "Lisbon"}),
+        structured(ResearchCandidates, {"places": [bad.model_dump()]}),
+    ])
+    result = make_researcher("sights")(state, {})["sights_result"]
+    assert result.status == "empty" and not result.places
+    assert model.calls == 3 and len(fake_tools[0]) == 1
+    assert "quote_not_in_source: 1" in result.warnings[0]
+
+
+def test_critic_tool_budget_leaves_only_structured_review(state, fake_tools, monkeypatch):
+    model = use_model(monkeypatch, critic_module, [
+        *[call("web_search", {"query": "Lisbon Museum Alpha"}) for _ in range(4)],
+        structured(CriticReview, {"soft_findings": []}),
+    ])
+    result = critic(state, {})
+    assert result["agent_error"] is None
+    assert result["critique_version"] == state["draft_version"]
+    assert len(fake_tools[0]) == 4
+    assert model.bound_names[-1] == ["CriticReview"]
+    assert "budget is exhausted" in str(model.seen_messages[-1])
+
+
+def test_critic_extract_limit_removes_extract_without_removing_search(state, fake_tools, monkeypatch):
+    model = use_model(monkeypatch, critic_module, [
+        call("read_page", {"url": state["places"][0].source_url}),
+        call("read_page", {"url": state["places"][0].source_url}),
+        structured(CriticReview, {"soft_findings": []}),
+    ])
+    result = critic(state, {})
+    assert result["agent_error"] is None
+    assert "read_page" not in model.bound_names[-1]
+    assert set(model.bound_names[-1]) == {"web_search", "CriticReview"}
+
+
+def test_critic_hard_failures_survive_tool_budget_finalization(state, fake_tools, monkeypatch):
+    state["source_registry"] = {}
+    use_model(monkeypatch, critic_module, [
+        *[call("web_search", {"query": "Lisbon Museum Alpha"}) for _ in range(4)],
+        structured(CriticReview, {"soft_findings": []}),
+    ])
+    result = critic(state, {})
+    assert result["agent_error"] is None
+    assert result["critique"].hard_failures
+    assert result["critique_version"] == state["draft_version"]
+
+
+def test_critic_batch_crossing_budget_declines_fifth_call_then_finishes(state, fake_tools, monkeypatch):
+    def batch(names):
+        return AIMessage(content="", tool_calls=[{
+            "name": name, "args": ({"query": "Lisbon Museum Alpha"} if name == "web_search"
+                                     else {"url": state["places"][0].source_url}),
+            "id": f"batch-{index}-{name}", "type": "tool_call",
+        } for index, name in enumerate(names)])
+
+    model = use_model(monkeypatch, critic_module, [
+        batch(["web_search", "web_search", "read_page"]),
+        batch(["web_search", "read_page"]),
+        structured(CriticReview, {"soft_findings": []}),
+    ])
+    result = critic(state, {})
+    assert result["agent_error"] is None
+    assert len(fake_tools[0]) == 4  # fifth requested call never executes
+    assert model.bound_names[-1] == ["CriticReview"]
+    assert any("tool failed" in finding.issue.casefold() for finding in result["critique"].soft_findings)
+    assert result["critique_version"] == state["draft_version"]
+    assert not result["critique"].hard_failures
+
+
+def test_weather_notes_include_only_received_dates_temperatures_and_units(state):
+    from src.agents._runtime import SpecialistRun
+    from src.agents.planner import _weather_notes
+
+    forecast = {"daily": {"time": ["2026-11-15"], "precipitation_probability_max": [2],
+                           "temperature_2m_min": [20], "temperature_2m_max": [29]},
+                "units": {"temperature_2m_min": " C", "temperature_2m_max": " C"}}
+    draft = _weather_notes(state["itinerary"], forecast, SpecialistRun([], 4))
+    note = draft.days[0].weather_note
+    assert "2026-11-15" in note and "2%" in note
+    assert "Low: 20 C" in note and "High: 29 C" in note
+    forecast["daily"].pop("temperature_2m_min")
+    forecast["daily"].pop("temperature_2m_max")
+    note = _weather_notes(state["itinerary"], forecast, SpecialistRun([], 4)).days[0].weather_note
+    assert "Low:" not in note and "High:" not in note
+
+
+def test_researcher_short_valid_output_gets_bounded_coverage_correction(state, fake_tools, monkeypatch):
+    sights = [place.model_dump() for place in state["places"] if place.category != "food"]
+    model = use_model(monkeypatch, researchers, [
+        call("web_search", {"query": "Lisbon"}),
+        structured(ResearchCandidates, {"places": sights[:1]}),
+        structured(ResearchCandidates, {"places": sights}),
+    ])
+    result = make_researcher("sights")(state, {})["sights_result"]
+    assert result.status == "ok" and len(result.places) == 2
+    assert model.calls == 3 and len(fake_tools[0]) == 1
+    assert "minimum_required" in str(model.seen_messages[-1])
+
+
+def test_planner_multiple_itineraries_gets_specific_single_response_correction(state, fake_tools, monkeypatch):
+    data = state["itinerary"].model_dump()
+    multiple = AIMessage(content="", tool_calls=[{
+        "name": "Itinerary", "args": data, "id": f"alternative-{i}", "type": "tool_call",
+    } for i in range(5)])
+    model = use_model(monkeypatch, planner_module, [multiple, structured(Itinerary, data)])
+    result = planner(state, {})
+    assert result["agent_error"] is None
+    assert model.calls == 2
+    assert all(options["parallel_tool_calls"] is False for options in model.bound_options)
+    assert "EXACTLY ONE" in str(model.seen_messages[-1])
+
+
+def test_planner_semantic_correction_identifies_day_and_stop_requirements(state, fake_tools, monkeypatch):
+    bad = state["itinerary"].model_dump()
+    bad["days"][0]["stops"] = bad["days"][0]["stops"][:2]
+    model = use_model(monkeypatch, planner_module, [structured(Itinerary, bad),
+                                                           structured(Itinerary, state["itinerary"])])
+    result = planner(state, {})
+    assert result["agent_error"] is None and model.calls == 2
+    feedback = str(model.seen_messages[-1])
+    assert "required_stops_per_day" in feedback and "day outside its pace limit" in feedback

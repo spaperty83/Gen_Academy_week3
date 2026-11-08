@@ -11,6 +11,7 @@ import streamlit as st
 from src.graph import (
     build_graph,
     get_checkpointer,
+    get_city_images,
     get_export,
     get_trip,
     list_trips,
@@ -40,7 +41,7 @@ def _init_session() -> None:
     defaults = {
         "thread_id": str(uuid4()), "phase": "input", "interrupt_payload": None,
         "warnings": [], "log_lines": [], "snapshot": {}, "pending_action": None,
-        "show_revision": False, "ui_error": None, "resume_trips": [],
+        "show_revision": False, "ui_error": None, "resume_trips": [], "city_photos": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -55,6 +56,7 @@ def _new_trip() -> None:
         "thread_id": str(uuid4()), "phase": "input", "interrupt_payload": None,
         "warnings": [], "log_lines": [], "snapshot": {}, "pending_action": None,
         "show_revision": False, "ui_error": None, "request_text": "", "revision_text": "",
+        "city_photos": {},
     })
 
 
@@ -66,6 +68,7 @@ def _queue_start() -> None:
     if not request:
         st.session_state.ui_error = "Please enter a city and a short trip request."
         return
+    st.session_state.city_photos = {}
     st.session_state.pending_action = {
         "thread_id": st.session_state.thread_id, "user_input": request,
         "failure_mode": st.session_state.get("demo_mode"),
@@ -102,6 +105,8 @@ def _queue_resume(
     if with_feedback and not feedback:
         st.session_state.ui_error = "Please describe the changes you want."
         return
+    if decision == "revise":
+        st.session_state.city_photos = {}
     st.session_state.pending_action = {
         "thread_id": thread_id, "decision": decision, "draft_version": draft_version,
         "feedback": feedback, "failure_mode": st.session_state.get("demo_mode"),
@@ -134,6 +139,7 @@ def _apply_snapshot(result: dict[str, Any]) -> None:
     old = st.session_state.snapshot
     if old.get("thread_id") != result["thread_id"] or old.get("draft_version") != result.get("draft_version"):
         st.session_state.revision_text = ""
+        st.session_state.city_photos = {}
     st.session_state.snapshot = result
     st.session_state.thread_id = result["thread_id"]
     st.session_state.warnings = view.get("warnings", [])
@@ -226,7 +232,8 @@ def _run_job(graph: Any) -> None:
     job = st.session_state.pending_action
     st.session_state.pending_action = None
     context = dict(st.session_state.snapshot)
-    with st.status("Planning your trip\u2026", expanded=True) as status:
+    progress = st.empty()
+    with progress.status("Run log - planning your trip", expanded=True) as status:
         try:
             if job is None:
                 # A browser rerun can interrupt a previous streaming script. Never
@@ -252,6 +259,7 @@ def _run_job(graph: Any) -> None:
             except Exception:  # noqa: BLE001 - the store itself may be temporarily unavailable
                 st.session_state.phase = "input"
                 st.session_state.thread_id = str(uuid4())
+    progress.empty()
     st.rerun()
 
 
@@ -297,6 +305,15 @@ def _sidebar(graph: Any, checkpointer: Any) -> None:
         st.caption("Paused trips survive app restarts.")
 
 
+
+def _workflow_notice(message: str) -> bool:
+    """Identify technical run history, preserving traveler-facing uncertainty."""
+    return (
+        message.startswith(("guardrail:", "Round or correction limit reached", "Trip limit reached"))
+        or "candidates dropped:" in message
+    )
+
+
 def _warn(values: list[str], exclude: set[str] | None = None) -> None:
     """Show each warning once; never enable unsafe HTML for model/source text."""
     for value in dict.fromkeys(values):
@@ -314,19 +331,46 @@ def _revision_form(thread: str, key: str, busy: bool) -> None:
         )
 
 
+
+def _city_photos(city: str) -> None:
+    """Cache optional display photos per city in this browser session only."""
+    cache = st.session_state.city_photos
+    key = city.strip().casefold()
+    if key not in cache:
+        try:
+            cache[key] = get_city_images(city)
+        except Exception:  # noqa: BLE001 - photos must not block review or export.
+            LOGGER.info("City photos unavailable")
+            cache[key] = []
+    photos = cache[key][:2]
+    if not photos:
+        return
+    st.caption(f"Photos of {city} for inspiration; they may not show your itinerary stops.")
+    for column, photo in zip(st.columns(len(photos)), photos, strict=True):
+        with column:
+            try:
+                st.image(photo["url"], width="stretch", alt=photo["caption"])
+                st.text(photo["caption"])
+                st.link_button("Image source", photo["source_url"])
+            except Exception:  # noqa: BLE001 - keep the itinerary usable if rendering fails.
+                st.caption("This photo is unavailable.")
+
+
 def _approval(payload: dict[str, Any], busy: bool) -> None:
     """Display only the backend-approved pause, and send its displayed version."""
     version = payload["draft_version"]
     thread = st.session_state.thread_id
     st.subheader(f"Draft v{version} \u00b7 checked by Critic")
     soft = [finding["issue"] for finding in payload.get("soft_findings", [])]
-    _warn(payload.get("warnings", []), set(soft))
+    _warn([message for message in payload.get("warnings", [])
+           if not _workflow_notice(message)], set(soft))
     _warn(soft)
     itinerary = payload["itinerary"]
+    _city_photos(itinerary["city"])
     for index, day in enumerate(itinerary["days"]):
         with st.expander(f"Day {day['day_number']} \u00b7 {day['theme']}", expanded=index == 0):
             if day.get("weather_note"):
-                st.caption(day["weather_note"])
+                st.info("Weather: " + day["weather_note"])
             for stop in day["stops"]:
                 st.write(f"{stop['time_slot'].capitalize()} \u00b7 {stop['place_name']}")
                 st.text(stop["note"])
@@ -395,12 +439,13 @@ def _export_failed(payload: dict[str, Any], busy: bool) -> None:
 def _done(graph: Any, busy: bool) -> None:
     """Read validated bytes through the API; never trust a path or manifest alone."""
     snapshot = st.session_state.snapshot
-    _warn(st.session_state.warnings)
     if snapshot.get("cancelled"):
         st.success("Trip cancelled")
+        _warn(st.session_state.warnings)
         return
     if not snapshot.get("saved_path"):
         st.info("Trip ended. Start a new trip when you're ready.")
+        _warn(st.session_state.warnings)
         return
     st.subheader("Your itinerary is exported")
     st.code(snapshot["saved_path"], language=None)
@@ -417,6 +462,14 @@ def _done(graph: Any, busy: bool) -> None:
     except Exception as error:  # noqa: BLE001 - do not expose disk/database exceptions
         LOGGER.warning("Read export failed (%s)", type(error).__name__)
         st.error("We couldn't read the export. Refresh and try again.")
+
+    weather_days = [day for day in (snapshot.get("itinerary") or {}).get("days", [])
+                    if day.get("weather_note")]
+    if weather_days:
+        st.subheader("Weather for your trip")
+        for day in weather_days:
+            st.info(f"Day {day['day_number']}: {day['weather_note']}")
+    _warn([message for message in st.session_state.warnings if not _workflow_notice(message)])
 
 
 def main() -> None:
@@ -435,30 +488,44 @@ def main() -> None:
     if st.session_state.ui_error:
         st.error(st.session_state.ui_error)
     busy = st.session_state.phase == "running"
+    result_area = st.container()
+    log_area = st.container()
     if busy:
-        _run_job(graph)
-    elif st.session_state.phase == "input":
-        _warn(st.session_state.warnings)
-        with st.form("new_request"):
-            st.text_area(
-                "Where would you like to go?", key="request_text",
-                placeholder="3 days in Lisbon, budget, food and history", disabled=busy,
-            )
-            st.form_submit_button(
-                "Plan trip", key="plan_trip", type="primary", disabled=busy, on_click=_queue_start,
-            )
-    elif st.session_state.phase == "approval":
-        _approval(st.session_state.interrupt_payload, busy)
-    elif st.session_state.phase == "recovery":
-        _recovery(st.session_state.interrupt_payload, busy)
-    elif st.session_state.phase == "export_failed":
-        _export_failed(st.session_state.interrupt_payload, busy)
-    else:
-        _done(graph, busy)
-    if st.session_state.log_lines:
-        with st.expander("Run log", expanded=False):
-            for line in st.session_state.log_lines:
-                st.text(line)
+        with log_area:
+            _run_job(graph)
+    with result_area:
+        if st.session_state.phase == "input":
+            _warn(st.session_state.warnings)
+            with st.form("new_request", enter_to_submit=True):
+                st.text_input(
+                    "Where would you like to go?", key="request_text",
+                    placeholder="3 days in Lisbon, budget, food and history", disabled=busy,
+                )
+                st.caption(
+                    "Include a start date (YYYY-MM-DD) to plan your trip with a weather forecast. "
+                    "Without a start date, your itinerary will be planned without weather information. "
+                    "Forecasts depend on availability and are generally limited to the next 16 days."
+                )
+                st.form_submit_button(
+                    "Plan trip", key="plan_trip", type="primary", disabled=busy, on_click=_queue_start,
+                )
+        elif st.session_state.phase == "approval":
+            _approval(st.session_state.interrupt_payload, busy)
+        elif st.session_state.phase == "recovery":
+            _recovery(st.session_state.interrupt_payload, busy)
+        elif st.session_state.phase == "export_failed":
+            _export_failed(st.session_state.interrupt_payload, busy)
+        else:
+            _done(graph, busy)
+    run_lines = list(dict.fromkeys([
+        *st.session_state.log_lines,
+        *(message for message in st.session_state.warnings if _workflow_notice(message)),
+    ]))
+    with log_area:
+        if run_lines:
+            with st.expander("Run log", expanded=False):
+                for line in run_lines:
+                    st.text(line)
 
 
 if __name__ == "__main__":

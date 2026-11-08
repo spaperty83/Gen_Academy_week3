@@ -154,6 +154,13 @@ def validate_decision(
         routed = gate.route_after_limits(state)
         reason = "guardrail: limits or traveler request routed through approval gate"
         return routed, reason if routed != chosen or _limits(state) else None
+    if (
+        _researchers(chosen) and state.get("itinerary") is not None
+        and state.get("critique_version") != state.get("draft_version")
+    ):
+        return "critic", "guardrail: check the current draft before dispatching more research"
+    if chosen == "critic" and gate.approvable(state):
+        return "traveler", "guardrail: current draft already checked; request traveler review"
     reasons = []
     if chosen == "critic" and not state.get("itinerary"):
         chosen = "planner"
@@ -172,6 +179,8 @@ def validate_decision(
             reasons.append("research short of coverage; dispatch only short researchers")
     if _researchers(chosen) and state.get("request") is not None:
         short = _short(state)
+        if not short and not state.get("itinerary"):
+            return "planner", "guardrail: coverage met; plan instead of repeating research"
         if short:
             selected = [focus for focus in _researchers(chosen) if focus in short] or short
             replacement = "both" if len(selected) == 2 else selected[0]
@@ -210,6 +219,7 @@ def compact_summary(state: TripState) -> dict[str, Any]:
         "branches": branches, "research_round": _counter(state, "research_round"),
         "researcher_attempts": dict(state.get("researcher_attempts", {})),
         "has_draft": state.get("itinerary") is not None,
+        "approvable": gate.approvable(state),
         "draft_version": state.get("draft_version", 0),
         "critique_version": state.get("critique_version"), "findings_by_owner": findings,
         "human_feedback": (state.get("human_feedback") or "")[:1500],

@@ -1,0 +1,35 @@
+{
+  "budget_tips": [
+    "Use transit.",
+    "Consider free hours."
+  ],
+  "city": "Lisbon",
+  "days": [
+    {
+      "day_number": 1,
+      "stops": [
+        {
+          "note": "Visit indoors.",
+          "place_name": "Lisbon Museum Alpha",
+          "source_url": "https://example.test/lisbon/sights/0",
+          "time_slot": "morning"
+        },
+        {
+          "note": "Visit indoors.",
+          "place_name": "Lisbon Gallery Beta",
+          "source_url": "https://example.test/lisbon/sights/1",
+          "time_slot": "afternoon"
+        },
+        {
+          "note": "Visit indoors.",
+          "place_name": "Lisbon Restaurant Gamma",
+          "source_url": "https://example.test/lisbon/food/0",
+          "time_slot": "evening"
+        }
+      ],
+      "theme": "Indoor exploration",
+      "weather_note": "Forecast precipitation probability: 20%."
+    }
+  ],
+  "warnings": []
+}

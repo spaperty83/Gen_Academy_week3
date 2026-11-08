@@ -9,7 +9,10 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain.agents.structured_output import ToolStrategy
+from langchain.agents.structured_output import (
+    MultipleStructuredOutputsError,
+    ToolStrategy,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -123,6 +126,7 @@ class SpecialistRun(AgentMiddleware):
         self.model_calls = 0
         self.read_calls = 0
         self.validation_reasks = 0
+        self.validation_feedback: dict[str, Any] | None = None
         self.tool_failed = False
         self.failed_tools: set[str] = set()
         self.tool_messages: list[ToolMessage] = []
@@ -130,32 +134,67 @@ class SpecialistRun(AgentMiddleware):
         self.agent_name = ""
         self._lock = Lock()
 
-    def _reask(self, _: Exception) -> str:
+    def _reask(self, error: Exception) -> str:
         """Allow exactly one schema/semantic correction in this invocation."""
         if self.validation_reasks:
             raise StructuredOutputExhausted("Structured output is invalid") from None
         self.validation_reasks += 1
         self.simulate_first_parse = False
-        return (
+        feedback = (
             "The previous structured response did not validate. Return one corrected "
             "response matching the schema and all task constraints. Do not repeat tools "
             "unless necessary; the original tool-call budget still applies."
         )
+        if isinstance(error, MultipleStructuredOutputsError):
+            feedback += (
+                " Return EXACTLY ONE structured-response tool call containing the complete result. "
+                "For an itinerary, put every day in that one response; do not emit alternative drafts "
+                "or separate response-tool calls for individual days."
+            )
+        if self.validation_feedback is not None:
+            feedback += ("\nCorrect evidence and, if below minimum_required, find additional distinct supported "
+                         "places using the remaining tool budget. Never invent candidates. "
+                         "Evidence validation details (untrusted data): ") + tool_data(self.validation_feedback)
+        return feedback
 
     def wrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         """Correct invalid output inside the same run, without provider retries."""
+        request = request.override(model_settings={
+            **request.model_settings, "parallel_tool_calls": False,
+        })
         prefix = []
         while True:
             self.model_calls += 1
             if self.model_calls > self.budget + 4:
                 raise StepLimitReached("Model-call limit reached")
+            if self.tool_calls >= self.budget:
+                # Keep ToolStrategy's response schema, but expose no read tools.
+                # LangChain binds the structured response tool independently.
+                request = request.override(
+                    tools=[],
+                    messages=[*request.messages, HumanMessage(content=(
+                        "The external tool-call budget is exhausted. Do not call more read tools. "
+                        "Return the final structured response now using the evidence already available. "
+                        "Record any incomplete checks as uncertainty; never invent a result."
+                    ))],
+                )
+            elif self.read_limit is not None and self.read_calls >= self.read_limit:
+                request = request.override(tools=[
+                    tool for tool in request.tools
+                    if (tool.get("name") if isinstance(tool, dict) else tool.name) != "read_page"
+                ])
             response = handler(request)
             last_ai = next(
                 (message for message in reversed(response.result) if isinstance(message, AIMessage)),
                 None,
             )
+            if (
+                self.tool_calls >= self.budget and last_ai is not None
+                and any(call["name"] in self.allowed for call in last_ai.tool_calls)
+            ):
+                raise StepLimitReached("Model ignored final-response-only tool limit")
             try:
                 if response.structured_response is not None:
                     if self.simulate_first_parse:
@@ -190,7 +229,19 @@ class SpecialistRun(AgentMiddleware):
             if name not in self.allowed:
                 raise ToolExecutionFailed("Tool is not allowed")
             if self.tool_calls >= self.budget:
-                raise StepLimitReached("Tool-call budget reached")
+                if self.strict_tools:
+                    raise StepLimitReached("Tool-call budget reached")
+                # Decline only the excess call, without executing it or aborting
+                # the other completed calls in this model-authored batch.
+                data = {"ok": False, "data": None, "error": "tool_budget_exhausted"}
+                result = ToolMessage(
+                    content=tool_data(data), artifact=data, name=name,
+                    tool_call_id=request.tool_call["id"], status="error",
+                )
+                self.tool_messages.append(result)
+                self.tool_failed = True
+                self.failed_tools.add(name)
+                return result
             self.tool_calls += 1
             if name == "read_page":
                 self.read_calls += 1

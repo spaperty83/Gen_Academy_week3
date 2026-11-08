@@ -1,0 +1,35 @@
+{
+  "budget_tips": [
+    "Use transit.",
+    "Consider free hours."
+  ],
+  "city": "Paris",
+  "days": [
+    {
+      "day_number": 1,
+      "stops": [
+        {
+          "note": "Visit indoors.",
+          "place_name": "Paris Museum Alpha",
+          "source_url": "https://example.test/paris/sights/0",
+          "time_slot": "morning"
+        },
+        {
+          "note": "Visit indoors.",
+          "place_name": "Paris Gallery Beta",
+          "source_url": "https://example.test/paris/sights/1",
+          "time_slot": "afternoon"
+        },
+        {
+          "note": "Visit indoors.",
+          "place_name": "Paris Restaurant Gamma",
+          "source_url": "https://example.test/paris/food/0",
+          "time_slot": "evening"
+        }
+      ],
+      "theme": "Indoor exploration",
+      "weather_note": "Forecast precipitation probability: 20%."
+    }
+  ],
+  "warnings": []
+}

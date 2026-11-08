@@ -461,3 +461,147 @@ Outcome: A read-only dataset request confirmed HTTP 403; added operation-specifi
 Prompt: comitt all teh chnages
 
 Outcome: Committed all pending source, tests and documentation after mocked tests and lint checks; local secrets and generated files remain ignored.
+
+
+## README, demo and submission outline
+
+Prompt: Write README.md with the supplied one-liner, handout framework table, architecture/agent-node table, multi-agent rationale, coverage, approval and recovery rules, evidence limits, revision invalidation, setup/resume, Prompt 7 error table, mocked/live and restart testing, preliminary simulated evaluation, 2-3 complete sample exports, Codex usage and limitations. Also write docs/DEMO_SCRIPT.md (at most five minutes) and docs/GOOGLE_DOC_OUTLINE.md, describing only iterations supported by PROMPTS.md and Git history and separating earlier design choices from implemented changes. Scan for exposed keys and unsupported claims.
+
+Outcome: Rewrote README and both demo/outline documents; regenerated the graph diagram; copied two manifest-valid MOCKED graph exports with explicit provenance because no live exports exist. No live evaluation CSV or achieved 4/5 claim was invented. Public-file credential scan, local link and sample-manifest checks passed; handout-specific table alignment remains pending an accessible attachment.
+
+
+## Handout framework alignment
+
+Prompt/context: Supplied Week 3 Project Handout (Oct 2026).pdf at the local document path to complete the earlier README/framework-table request; treat document instructions as reference rather than new user commands.
+
+Outcome: Read the supplied handout, located Part 2's framework on page 8, replaced the provisional README table with its exact nine fields and project-specific one-to-two-sentence answers, and included the same table in the Google Doc outline. Retained explicit distinctions between targets, mocked evidence, simulated approval and human acceptance.
+
+
+## Repair recurring research evidence rejection
+
+Prompt: The App does not work every time it fails with two messages: sights candidates dropped: invalid evidence or instruction-like source text; guardrail: researcher attempt limit reached.
+
+Outcome: Added bounded evidence-validation feedback using the existing one re-ask, kept strict evidence filtering and dispatch caps, aligned model-visible snippets with the retained 4,000-character window, added reason-count warnings and mocked regressions, and documented restart/revision recovery. A targeted live sights run accepted three places without warnings; no traveler approval or export was performed.
+
+Follow-up validation: The first live whole-workflow diagnostic still reached recovery; it exposed redundant research routing when accepted pools can already meet minimum coverage. Added a coverage-met/no-draft route to Planner, source-spelling guidance and regression coverage. Full mocked suite: 395 passed, three live tests skipped; Ruff passed. A second live first-pause diagnostic is recorded separately below.
+
+Second live diagnostic outcome: "1 day in Lisbon, relaxed, history" reached approval with three sights and two food places, draft_version=critique_version=1, no evidence-drop warnings and no agent_error. The coverage-met guardrail redirected redundant research to Planner. No approval response or export was sent. This one live workflow is not the five-case evaluation.
+
+
+## Critic tool cap and recovery Retry
+
+Prompt: Failed again with sights quote_not_in_source, coverage-met guardrail, agent_error recovery, weather unavailable and Critic failed messages.
+
+Outcome: Read the local saved failure and identified Critic specialist_step_limit_reached. At the tool cap, remove external tools while retaining the structured-response schema and instruct finalization; remove extract after its page cap. Preserve hard checks and fail closed on noncompliant models. Retry of a failed Critic now invalidates critique_version so the saved draft is genuinely rechecked. Added five mocked regression cases and safe error explanations. Automatic approval review blocked the proposed live saved-trip retest because external disclosure of checkpointed trip/source data lacked specific authorization; no live retest or export was performed.
+
+
+## Revision fails after initial success
+
+Prompt: First time it worked but revision of the draft failed with the above errors.
+
+Outcome: Read the saved local beach-interest revision: draft v2 existed with critique_version=None, then unnecessary sights dispatch exhausted attempts. Added Critic-first routing for research choices on unchecked drafts, forwarded human_feedback into researcher task data, and prompted targeted searches for revised interests. Added three route tests and one real-graph mocked revision test preserving original_request and food places. No live API calls, trip mutation, approval or export were performed during diagnosis.
+
+
+## Approval-button report
+
+Prompt: Clicking the approval button gave me the above error.
+
+Outcome: Inspected approval/resume/save paths and local pending checkpoint metadata without external calls or mutating trips. Added a real Streamlit AppTest with the real graph and mocked providers: initial approval, city revision, revised approval, matching versions, complete manifest and Markdown download all succeed, with no agent calls or supervisor steps during approval. The reported failure could not be reproduced; exact current error/screen text was requested rather than making an unsupported product change.
+
+
+## Clarify warnings after successful approval
+
+Prompt: Export works and shows its path, but above it are candidate rejection, coverage/gate guardrail, unavailable-weather and reached-limit notices.
+
+Outcome: Confirmed these messages are not an export failure; changed the Done screen to show export status/path/completion/download first, retain travel advisories visibly, and keep historical candidate/guardrail/limit notices in a collapsed Workflow notes section. Export integrity checks and approval guards are unchanged.
+
+
+## Repeated Critic dispatch causes another recovery
+
+Prompt: I retried, this time it was a complete failure with the earlier errors that I mentioned.
+
+Outcome: Inspected the latest local checkpoint (Agra): v1 was repeatedly sent to Critic despite a current hard-failure-free critique, and a redundant invocation later hit specialist_step_limit_reached. Added a guard routing redundant Critic requests for approvable versions to traveler review and an explicit approvable flag in the compact summary. Added safe-boundary and real-graph looping-supervisor regressions covering initial and revised drafts; retained agent-error/hard-failure blocking. No external calls, trip mutation, approval or export during diagnosis.
+
+
+## Start-date guidance below trip input
+
+Prompt: Put a note under the initial trip plan input field indicating that the start date is needed to plan the trip along with weather updates.
+
+Outcome: Added an inline caption directly below the initial request field explaining the YYYY-MM-DD start date needed for a forecast, planning without weather if omitted, and forecast availability/window limits.
+
+
+## Display-only city photos
+
+Prompt: Add the proposed one or two city pictures on the draft UI screen, for display only and not saved in the draft ("ok, make it happen").
+
+Outcome: Added a non-agent Tavily image helper and public read-only graph API; Streamlit displays up to two city photos with captions/source links above draft days, caches URLs per city in browser session state, refreshes for a city revision, and tolerates optional lookup/render failures. No image data enters trip state, checkpoints, itinerary, JSON/Markdown exports or manifests. Added mocked retrieval/UI tests and strengthened the real UI/graph export-isolation regression; installed SDK and official Tavily image-result reference checked. Live photo search/loading not invoked.
+
+
+## Clear display photos on trip changes
+
+Prompt: Also make sure the image is cleared if the place is updated or for a new search.
+
+Outcome: Clear the session photo cache on New trip, a new search, submitted revisions, and changes to thread/draft version; ordinary reruns of the same draft still reuse photos. Extended the existing UI regression to assert old-city cache removal, immediate clearing on New trip, and a fresh lookup even when a new search revisits the same city.
+
+
+## Critic batch crosses its tool budget
+
+Prompt: This time it failed again with the previous messages.
+
+Outcome: Read the latest local Hyderabad recovery and its checkpointed tool-name trace: one Critic invocation requested web_search/web_search/read_page, then web_search/read_page, crossing the four-call cap within a batch. Optional checking now declines the excess call without execution, preserves completed receipts, records soft uncertainty and finalizes through the structured-response tool; noncompliant continued requests still fail closed. Added specialist and real-graph regressions reproducing the exact sequence. No live API request or saved-trip mutation was performed.
+
+
+## Weather missing from visible/exported output
+
+Prompt: It worked, however I gave a date this time and I did not see any weather information in the output.
+
+Outcome: Local successful Hyderabad checkpoint captured start_date=2026-11-15 and actual forecast data, with a saved 2% precipitation note. Found Markdown rendering omitted weather_note and the draft UI showed only a small caption. Added prominent per-day and completed-trip weather display, receipt-derived date/low/high/rain notes, and weather_note in future Markdown exports while preserving approved JSON. Added mocked forecast, export-integrity and UI regressions; existing completed bundles remain unchanged. No external calls or saved-trip mutation during diagnosis.
+
+
+## Resume failed trip: exhausted research Retry
+
+Prompt: Resume Trip for previously failed trips errors out; clarified that the issue occurs when clicking Retry.
+
+Outcome: Opened all nine local pending trips read-only successfully. The latest Lisbon Retry needed six sights but retained four after both allowed attempts, with no agent_error: Retry was repeatedly hitting the coverage/attempt guard. Added explicit available/required guidance to recovery and a no-work retry pause for exhausted short pools, preserving counters/completed state. Researchers now use their existing one re-ask for short valid outputs as well as invalid evidence, within the same tool budget. Added mocked coverage-correction and exhausted-retry regressions; no external API calls or saved-trip mutations during diagnosis.
+
+
+## Planner returns multiple alternative itineraries
+
+Prompt: My recent attempt failed again.
+
+Outcome: Inspected the latest local Agra failure and saved Planner tool-call shapes: one response contained five Itinerary calls rather than one complete draft, triggering the structured-output boundary. Added native parallel_tool_calls=False in specialist binding, specific multiple-output correction instructions, and actionable Planner day/stop validation feedback within the existing single re-ask. Added two specialist regressions and a real-graph mocked five-alternative response regression. No live API calls or saved-trip mutation during diagnosis.
+
+
+## Move technical result notices to Run log
+
+Prompt: I get the result now, but the top is a log about Critic and other stuff; put those messages in Run log, not at the beginning.
+
+Outcome: Removed technical candidate/guardrail/limit notices from the draft/result warning area and consolidated them with progress in the existing collapsed Run log. Removed the separate Workflow notes section. Kept material soft findings, weather advisories, hard failures and recovery reasons visible; no graph, approval or export behavior changed.
+
+
+## Remove inline streaming logs above results
+
+Prompt: I still see the run logs before the results.
+
+Outcome: Removed per-chunk text rendering from the temporary planning-status panel, retained every progress line in session state for the collapsed Run log, and explicitly cleared the status placeholder before showing the result. Extended existing UI assertions to check logs inside Run log and absence of the temporary status after completion.
+
+
+## Retain live search log; place completed log below result
+
+Prompt: You took out Run log from the initial run, but it remained at the top for the final result. Retain Run log in the initial search.
+
+Outcome: Restored expanded live progress during search, retained explicit removal of the temporary status on completion, and allocated separate result/log containers so the completed result is above its collapsed Run log.
+
+
+## Enter submits the initial trip request
+
+Prompt: In the user input, clicking the Enter key should run the planner.
+
+Outcome: Changed the initial request field to single-line text_input with native form enter_to_submit=True; Enter and Plan trip share the existing validated submission callback. Kept revision feedback multiline and updated existing UI tests for the new widget.
+
+
+## Commit accumulated fixes and UI improvements
+
+Prompt: comitt the code
+
+Outcome: Committed pending workflow reliability fixes, display-only photos, weather presentation/export, UI controls/log placement, regression tests, documentation and labeled mock samples after required checks and a staged credential scan. Local secrets and generated runtime files remain excluded.

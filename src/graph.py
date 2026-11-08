@@ -25,9 +25,11 @@ from src.agents.critic import critic
 from src.agents.orchestrator import apply_revision, orchestrator
 from src.agents.planner import planner
 from src.agents.researchers import make_researcher
+from src.coverage import needed
 from src.evidence import normalize_name, validate_places
 from src.state import (
     MAX_CORRECTION_CYCLES,
+    MAX_RESEARCHER_ATTEMPTS,
     MAX_ROUND_STEPS,
     MAX_TRIP_STEPS,
     AgentError,
@@ -37,7 +39,7 @@ from src.state import (
     SourceRecord,
     TripState,
 )
-from src.tools import save_itinerary
+from src.tools import save_itinerary, search_city_images
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
@@ -257,6 +259,13 @@ def _screen_warnings(state: Mapping[str, Any], *, approval: bool = False) -> lis
     error = _json(state.get("agent_error"))
     if isinstance(error, Mapping):
         warnings.append(f"{error.get('agent', 'agent')} failed; completed state is retained for recovery.")
+        explanation = {
+            "specialist_step_limit_reached": "The agent exhausted its bounded tool/model steps; Retry can recheck the saved draft.",
+            "structured_output_invalid_after_one_reask": "The agent returned invalid structured output after one correction.",
+            "specialist_tool_failed": "A required tool failed after its allowed retries.",
+        }.get(error.get("message"))
+        if explanation:
+            warnings.append(explanation)
     if state.get("trip_steps", 0) >= MAX_TRIP_STEPS:
         warnings.append("Trip limit reached; start a new trip or cancel if recovery is needed.")
     elif (
@@ -356,6 +365,30 @@ def _retry_instructions(state: GraphState) -> dict[str, str]:
     return instructions
 
 
+
+def _exhausted_research(state: GraphState) -> list[str]:
+    """Explain categories that cannot make progress through same-round Retry."""
+    if state.get("request") is None:
+        return []
+    required = needed(state["request"])
+    names = {"sights": set(), "food": set()}
+    seen = set()
+    for raw in state.get("places", []):
+        place = Place.model_validate(raw)
+        name = normalize_name(place.name)
+        if name and name not in seen:
+            names["food" if place.category == "food" else "sights"].add(name)
+            seen.add(name)
+    return [
+        f"{focus.capitalize()} research found {len(names[focus])} of {required[focus]} required places "
+        "and has used both attempts this round. Retry cannot reset that limit; "
+        "revise your request or use New trip."
+        for focus in required
+        if len(names[focus]) < required[focus]
+        and state.get("researcher_attempts", {}).get(focus, 0) >= MAX_RESEARCHER_ATTEMPTS
+    ]
+
+
 def recovery(
     state: GraphState, config: RunnableConfig,
 ) -> Command[Literal["recovery", "orchestrator", "end_cancelled", "__end__"]]:
@@ -368,7 +401,7 @@ def recovery(
         ),
         "options": gate.recovery_options(state),
         "hard_findings": _findings(state, "hard_failures"),
-        "warnings": _screen_warnings(state),
+        "warnings": _screen_warnings(state) + _exhausted_research(state),
     }))
     action = answer.get("decision")
     if action not in gate.recovery_options(state):
@@ -378,8 +411,14 @@ def recovery(
     if action == "revise":
         return _revise(state, answer, config, "recovery")
     if action == "retry":
+        blocked = _exhausted_research(state)
+        if blocked:
+            return Command(goto="recovery")
+        error = _json(state.get("agent_error"))
+        recheck = ({"critique_version": None}
+                   if isinstance(error, Mapping) and error.get("agent") == "critic" else {})
         return Command(goto="orchestrator", update={
-            "agent_error": None, "approved_version": None, "decision": "retry",
+            **recheck, "agent_error": None, "approved_version": None, "decision": "retry",
             "instructions": _retry_instructions(state),
         })
     if action == "new_trip":
@@ -587,6 +626,13 @@ def get_trip(graph: CompiledStateGraph, thread_id: str) -> dict[str, Any]:
     if pending:
         result["__interrupt__"] = tuple(pending)
     return result | {"screen": trip_screen(result)}
+
+
+
+def get_city_images(city: str) -> list[dict[str, str]]:
+    """Look up optional city photos without reading/writing any trip checkpoint."""
+    result = search_city_images(city)
+    return result["data"] if result["ok"] else []
 
 
 def get_export(graph: CompiledStateGraph, thread_id: str) -> dict[str, Any]:

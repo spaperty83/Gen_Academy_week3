@@ -18,6 +18,8 @@ class FakeAPI:
     """A public-API contract fake; UI tests cannot touch a graph or saver internals."""
 
     def __init__(self):
+        self.photos_by_city = {}
+        self.image_calls = []
         self.graph = object()
         self.saver = object()
         self.store = {}
@@ -28,6 +30,10 @@ class FakeAPI:
         self.raise_error = False
         self.stop_stream = False
         self.recovery_options = ["revise", "retry", "cancel"]
+
+    def get_city_images(self, city):
+        self.image_calls.append(city)
+        return copy.deepcopy(self.photos_by_city.get(city, []))
 
     def get_checkpointer(self, path):
         self.created += 1
@@ -165,7 +171,7 @@ class FakeAPI:
 def ui(monkeypatch):
     st.cache_resource.clear()
     fake = FakeAPI()
-    for name in ("get_checkpointer", "build_graph", "list_trips", "get_trip", "get_export", "stream_trip"):
+    for name in ("get_checkpointer", "build_graph", "list_trips", "get_trip", "get_export", "stream_trip", "get_city_images"):
         monkeypatch.setattr(api, name, getattr(fake, name))
     app = AppTest.from_file(APP, default_timeout=10)
     app.run()
@@ -175,7 +181,7 @@ def ui(monkeypatch):
 
 
 def start(app):
-    app.text_area(key="request_text").set_value("1 day in Lisbon, relaxed, history")
+    app.text_input(key="request_text").set_value("1 day in Lisbon, relaxed, history")
     app.button(key="plan_trip").click().run()
     assert not app.exception
     return app.session_state["thread_id"]
@@ -207,6 +213,9 @@ def test_start_streams_once_and_approval_has_sources_warnings_and_budget_label(u
     assert len(app.get("link_button")) == 1
     assert any("web_search 'Lisbon food'" in line for line in app.session_state["log_lines"])
     assert any("food replaced, sights kept" in line for line in app.session_state["log_lines"])
+    run_log = next(section for section in app.expander if section.label == "Run log")
+    assert any("web_search" in item.value for item in run_log.text)
+    assert not app.get("status")  # temporary progress is removed before the result
     app.run()  # ordinary reruns must never replay the queued action
     starts = [call for call in fake.calls if call.get("user_input")]
     assert len(starts) == 1 and starts[0]["thread_id"] == thread
@@ -412,3 +421,59 @@ def test_open_restores_phase_directly_from_pause_kind(ui, kind):
     assert app.session_state["thread_id"] == "restored"
     assert not any(button.label == "Approve & export" for button in app.button)
     assert not fake.calls
+
+
+def test_city_photos_display_once_and_change_with_revised_city(ui):
+    app, fake = ui
+    fake.photos_by_city = {
+        city: [{"url": f"https://images.test/{city}/{i}.jpg", "caption": f"{city} skyline {i}",
+                "source_url": f"https://tourism.test/{city}/{i}"} for i in range(2)]
+        for city in ("Lisbon", "Paris")
+    }
+    thread = start(app)
+    assert len(app.get("image")) == 2
+    assert fake.image_calls == ["Lisbon"]
+    assert sum(button.proto.label == "Image source" for button in app.get("link_button")) == 2
+    app.run()
+    assert fake.image_calls == ["Lisbon"]
+    app.button(key="approval_revise").click().run()
+    app.text_area(key="revision_text").set_value("change Lisbon to Paris")
+    app.button(key="approval_revision_submit").click().run()
+    assert fake.image_calls == ["Lisbon", "Paris"]
+    assert set(app.session_state["city_photos"]) == {"paris"}
+    assert len(app.get("image")) == 2
+    assert any("Photos of Paris" in item.value for item in app.caption)
+    assert "city_photos" not in fake.store[thread]
+    app.button(key=f"approve_{thread}_2").click().run()
+    assert app.session_state["phase"] == "done"
+    assert badge_present(app)
+    app.sidebar.button(key="new_trip").click().run()
+    assert app.session_state["city_photos"] == {}
+    assert not app.get("image")
+    start(app)
+    assert fake.image_calls == ["Lisbon", "Paris", "Lisbon"]
+    assert len(app.get("image")) == 2
+
+
+def test_missing_photos_dont_block_review_and_cache_empty_result(ui):
+    app, fake = ui
+    start(app)
+    app.run()
+    assert app.session_state["phase"] == "approval"
+    assert not app.get("image")
+    assert fake.image_calls == ["Lisbon"]
+    assert not app.exception
+
+
+def test_weather_visible_during_review_and_after_export(ui):
+    app, fake = ui
+    thread = start(app)
+    note = "Forecast for 2026-11-15: Precipitation probability: 2%; High: 29 C."
+    fake.store[thread]["itinerary"]["days"][0]["weather_note"] = note
+    app.sidebar.selectbox(key="resume_choice").select(thread).run()
+    app.sidebar.button(key="open_trip").click().run()
+    assert any("Weather: " + note in item.value for item in app.info)
+    app.button(key=f"approve_{thread}_1").click().run()
+    assert app.session_state["phase"] == "done"
+    assert any(item.value == "Weather for your trip" for item in app.subheader)
+    assert any(note in item.value for item in app.info)
