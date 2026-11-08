@@ -138,7 +138,9 @@ def make_researcher(
             result = ResearchResult(
                 status="ok" if places else "empty", places=places, round_id=round_id,
                 sources=entries,
-                warnings=(["read_page failed; using search snippets."]
+                warnings=(["Research tool budget reached; excess calls skipped and successful receipts retained."]
+                          if run.budget_declined else [])
+                + (["read_page failed; using search snippets."]
                           if "read_page" in run.failed_tools else [])
                 + ([(f"{focus} candidates dropped: invalid evidence or instruction-like source text "
                    f"({', '.join(f'{reason}: {count}' for reason, count in rejection_counts.items())}).")]

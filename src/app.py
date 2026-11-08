@@ -309,7 +309,8 @@ def _sidebar(graph: Any, checkpointer: Any) -> None:
 def _workflow_notice(message: str) -> bool:
     """Identify technical run history, preserving traveler-facing uncertainty."""
     return (
-        message.startswith(("guardrail:", "Round or correction limit reached", "Trip limit reached"))
+        message.startswith(("guardrail:", "Round or correction limit reached", "Trip limit reached",
+                            "Research tool budget reached"))
         or "candidates dropped:" in message
     )
 
@@ -360,7 +361,7 @@ def _approval(payload: dict[str, Any], busy: bool) -> None:
     """Display only the backend-approved pause, and send its displayed version."""
     version = payload["draft_version"]
     thread = st.session_state.thread_id
-    st.subheader(f"Draft v{version} \u00b7 checked by Critic")
+    st.subheader(f"Draft v{version}")
     soft = [finding["issue"] for finding in payload.get("soft_findings", [])]
     _warn([message for message in payload.get("warnings", [])
            if not _workflow_notice(message)], set(soft))
@@ -374,18 +375,21 @@ def _approval(payload: dict[str, Any], busy: bool) -> None:
             for stop in day["stops"]:
                 st.write(f"{stop['time_slot'].capitalize()} \u00b7 {stop['place_name']}")
                 st.text(stop["note"])
-                url = stop["source_url"]
-                if urlparse(url).scheme in {"http", "https"}:
-                    st.link_button(
-                        f"Source \u00b7 {stop['place_name']}", url, disabled=busy,
-                        key=f"source_{index}_{stop['time_slot']}_{stop['place_name']}",
-                    )
     st.markdown("**budget preference considered**")
     for tip in itinerary.get("budget_tips", []):
         st.write("\u2022 " + tip)
     with st.expander("Delegation log", expanded=False):
         for entry in payload.get("delegation_log", []):
             st.text(f"Step {entry['step']}: {entry['next']} \u2014 {entry['reason']}")
+    with st.expander("Citations", expanded=False):
+        for day in itinerary["days"]:
+            for index, stop in enumerate(day["stops"]):
+                url = stop["source_url"]
+                if urlparse(url).scheme in {"http", "https"}:
+                    st.link_button(
+                        f"Day {day['day_number']} - {stop['place_name']}", url, disabled=busy,
+                        key=f"citation_{day['day_number']}_{index}",
+                    )
     st.button(
         "Approve & export", key=f"approve_{thread}_{version}", type="primary", disabled=busy,
         on_click=_queue_resume, args=(thread, "approve", version),

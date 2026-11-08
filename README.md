@@ -2,7 +2,7 @@
 
 My agent helps a traveler plan a city trip in a Streamlit web app, replacing the 3–4 hours of reading travel blogs and juggling tabs it takes today. Five cooperating agents research places, check the weather, build a day-by-day itinerary and critique it on their own using 4 tools, then hand off to the traveler to approve or revise before the final itinerary is exported. I'll know it works when a traveler reaches an approved itinerary that passes every hard check in under 10 minutes for 4 out of 5 test trips.
 
-This is the product hypothesis and success target. The 3–4 hour baseline has not been measured here, and the 4/5 live target has not been demonstrated. Current evidence is **428 mocked tests passing, three live tests skipped**. No live evaluation CSV is present; the most recent recorded LangSmith access check returned HTTP 403.
+This is the product hypothesis and success target. The 3–4 hour baseline has not been measured here, and the 4/5 live target has not been demonstrated. Current evidence is **434 mocked tests passing, three live tests skipped**. No live evaluation CSV is present; the most recent recorded LangSmith access check returned HTTP 403.
 
 ## Agent framework
 
@@ -158,7 +158,7 @@ python -m ruff check src tests
 python -m pytest -q tests/test_failures.py tests/test_app.py tests/test_app_api.py tests/test_run_eval.py
 ```
 
-The most recent full run passed 428 tests with three live tests skipped. [tests/test_graph.py](tests/test_graph.py), `test_sqlite_restart_lists_pending_trip_and_resumes_export`, uses a temporary SQLite FILE: pause, close the connection, rebuild saver/graph, list the pending trip, approve and validate the export. UI tests also exercise cached resources, versioned actions, downloads and friendly errors. These are mocked functional checks, not measured human acceptance.
+The most recent full run passed 434 tests with three live tests skipped. [tests/test_graph.py](tests/test_graph.py), `test_sqlite_restart_lists_pending_trip_and_resumes_export`, uses a temporary SQLite FILE: pause, close the connection, rebuild saver/graph, list the pending trip, approve and validate the export. UI tests also exercise cached resources, versioned actions, downloads and friendly errors. These are mocked functional checks, not measured human acceptance.
 
 ```powershell
 python -m scripts.smoke_test
@@ -381,3 +381,30 @@ keep the final itinerary/export above the collapsed Run log on the result screen
 
 The initial trip request uses a single-line field: press Enter or click Plan trip
 to submit. The revision feedback field remains multiline.
+
+Draft source links are grouped in a collapsed Citations section immediately
+before Approve & export, rather than inside each day. Exports retain their source
+links; photo attribution stays beside each displayed photo.
+
+
+Researcher batches use the same capped finalization behavior as optional Critic
+checks: an excess call is declined without execution, and successful search
+receipts can still produce the final ResearchCandidates response. Budget declines
+are not misclassified as Tavily outages; actual required-search failures still
+fail the researcher. A saved Yellowstone failure showed successful Food Researcher
+searches discarded when repeated batches exceeded eight calls. Mocked specialist
+and real-graph regressions reproduce that sequence, retain evidenced food places
+and reach review. Existing exhausted rounds still require a valid revision or New
+trip; Retry does not reset their dispatch counts. Live reliability remains unmeasured.
+
+The draft heading shows only its version; the Critic-check confirmation is kept
+in run history rather than displayed above the result. Approval checks are unchanged.
+
+
+Checkpoint model compatibility: models restored from an older module identity
+(such as a cached graph surviving source reload) are converted to field data only
+when their module and model name match the current schema, then fully revalidated.
+Patch omission versus explicit null is preserved; invalid values and unrelated
+models remain rejected. A saved Yellowstone modification exposed this validation
+failure before the revision was applied. Restart the server after code updates;
+that already-stopped attempt may require a new trip because no interrupt was saved.

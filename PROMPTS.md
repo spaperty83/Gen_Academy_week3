@@ -607,3 +607,52 @@ Prompt: comitt the code
 Outcome: Committed pending workflow reliability fixes, display-only photos, weather presentation/export, UI controls/log placement, regression tests, documentation and labeled mock samples after required checks and a staged credential scan. Local secrets and generated runtime files remain excluded.
 
 Commit verification follow-up: Git reported future CRLF conversion for sample exports; added .gitattributes byte preservation and checked staged sample JSON/Markdown hashes against both committed manifests.
+
+
+## Collapsible citations before approval
+
+Prompt: Results start with citations; put citations in a collapsible dropdown like Run log, just before the Approve button.
+
+Outcome: Grouped itinerary stop source links by day/place in a collapsed Citations expander immediately before Approve & export. Kept photo attribution by images and preserved exported citations; extended the existing UI assertion for the grouped links.
+
+
+## Food Researcher discards work at batch tool cap
+
+Prompt: It failed again.
+
+Outcome: Read the latest local Yellowstone failure: sights were sufficient, Food Researcher failed twice with specialist_step_limit_reached despite successful search receipts; batched searches crossed the eight-call cap. Extended decline-without-execution handling to strict researchers without treating a budget decline as a failed required search. Finalization exposes only the structured response tool and preserves successful receipts; actual network failures and noncompliant continued calls remain bounded failures. Added specialist and full-graph mocked regressions for the saved batch pattern. No live APIs or saved-trip mutation during diagnosis.
+
+
+## Remove top Critic confirmation
+
+Prompt: The Critic outputs confirmation on top of the results should be taken out.
+
+Outcome: Removed "checked by Critic" from the draft heading, retaining Draft vN, Critic progress in Run log and all approval/version checks. Material travel advisories remain visible.
+
+
+## Inspect latest modified-trip error
+
+Prompt: Check the latest error after I modified the trip.
+
+Outcome: Read local pending checkpoints without external calls or mutations. The newest revised trip is Paris, changed to one day, at approval with draft_version=critique_version=2, no hard failures and no agent_error. Only unavailable-weather advisories remain; the newer Yellowstone recovery is an unrevised older failure pattern. No product fix was indicated by the revised trip state.
+
+
+## Yellowstone modification fails on restored model identity
+
+Prompt: Check for Yellowstone revised which I just ran.
+
+Outcome: Located the newest Yellowstone root checkpoint (not just pending pauses): its draft v1 had passed Critic, but a later recovery task failed Pydantic validation because a restored TripRequest instance was not recognized as the current class. The revision had not been applied and no pending interrupt remained. Added same-module/same-model-name before-validation conversion to field data, preserving patch unset fields and full strict validation; added four mocked compatibility/security regressions. No saved-trip mutation, approval, export or external API calls during diagnosis.
+
+
+## Delete earlier saved trips
+
+Prompt: Delete all the earlier trips.
+
+Outcome: Deleted every saved checkpoint thread through the public delete_trip API and verified zero remaining checkpoints; exported itinerary files and samples were preserved.
+
+
+## Commit latest changes
+
+Prompt: commit changes
+
+Outcome: Committed pending workflow/model compatibility fixes, UI refinements, regression tests and documentation after required checks and a staged secret scan; local credentials, checkpoints and generated runtime exports remain excluded.

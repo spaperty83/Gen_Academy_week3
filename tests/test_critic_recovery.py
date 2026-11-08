@@ -170,3 +170,29 @@ def test_planner_five_alternative_tool_calls_corrects_once_and_reaches_review(ru
     assert result["agent_error"] is None
     assert result["critique_version"] == result["draft_version"] == 1
     assert result["saved_path"] is None
+
+
+def test_research_search_batches_over_budget_do_not_discard_valid_food(run):
+    from langchain_core.messages import AIMessage
+
+    respond = run.respond
+
+    def food_batches(role, payload, messages, call_number, bound):
+        if role == "researcher" and payload["focus"] == "food" and call_number <= 4:
+            if call_number == 1:
+                return respond(role, payload, messages, call_number, bound)
+            return AIMessage(content="", tool_calls=[{
+                "name": "web_search", "args": {"query": "Lisbon food"},
+                "id": f"food-{call_number}-{index}", "type": "tool_call",
+            } for index in range(3)])
+        return respond(role, payload, messages, call_number, bound)
+
+    run.respond = food_batches
+    result = run.start()
+    assert trip_screen(result)["kind"] == "approval"
+    assert result["agent_error"] is None
+    assert run.dispatches == {"sights": 1, "food": 1}
+    assert run.calls["service:food:1"] == 8
+    assert any(place.category == "food" for place in result["places"])
+    assert not result["critique"].hard_failures
+    assert result["saved_path"] is None

@@ -10,7 +10,14 @@ import operator
 from datetime import date
 from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Budget = Literal["budget", "mid", "luxury"]
 Pace = Literal["relaxed", "normal", "packed"]
@@ -35,6 +42,20 @@ class _Model(BaseModel):
     """Reject misspelled or unexpected fields at structured-output boundaries."""
 
     model_config = ConfigDict(extra="forbid", revalidate_instances="always")
+
+    @model_validator(mode="before")
+    @classmethod
+    def restored_model_fields(cls, value: Any) -> Any:
+        """Revalidate same-named checkpoint models surviving a module reload."""
+        if (
+            isinstance(value, BaseModel) and not isinstance(value, cls)
+            and type(value).__module__ == cls.__module__
+            and type(value).__name__ == cls.__name__
+        ):
+            # Preserve patch omission versus explicit null while validating all
+            # supplied values against the current schema (never trust old types).
+            return value.model_dump(exclude_unset=True)
+        return value
 
 
 class _DatedModel(_Model):

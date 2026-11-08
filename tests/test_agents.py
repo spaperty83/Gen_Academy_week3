@@ -774,3 +774,22 @@ def test_planner_semantic_correction_identifies_day_and_stop_requirements(state,
     assert result["agent_error"] is None and model.calls == 2
     feedback = str(model.seen_messages[-1])
     assert "required_stops_per_day" in feedback and "day outside its pace limit" in feedback
+
+
+def test_researcher_crossing_budget_finalizes_successful_receipts(state, fake_tools, monkeypatch):
+    def searches(count, prefix):
+        return AIMessage(content="", tool_calls=[{
+            "name": "web_search", "args": {"query": "Lisbon food"},
+            "id": f"{prefix}-{index}", "type": "tool_call",
+        } for index in range(count)])
+
+    foods = [place.model_dump() for place in state["places"] if place.category == "food"]
+    model = use_model(monkeypatch, researchers, [
+        searches(1, "a"), searches(3, "b"), searches(3, "c"), searches(3, "d"),
+        structured(ResearchCandidates, {"places": foods}),
+    ])
+    result = make_researcher("food")(state, {})["food_result"]
+    assert result.status == "ok" and result.places
+    assert len(fake_tools[0]) == 8
+    assert model.bound_names[-1] == ["ResearchCandidates"]
+    assert any("excess calls skipped" in warning for warning in result.warnings)

@@ -211,6 +211,8 @@ def test_start_streams_once_and_approval_has_sources_warnings_and_budget_label(u
     assert any("Opening hours" in item.value for item in app.warning)
     assert any("budget preference considered" in item.value for item in app.markdown)
     assert len(app.get("link_button")) == 1
+    citations = next(section for section in app.expander if section.label == "Citations")
+    assert len(citations.get("link_button")) == 1
     assert any("web_search 'Lisbon food'" in line for line in app.session_state["log_lines"])
     assert any("food replaced, sights kept" in line for line in app.session_state["log_lines"])
     run_log = next(section for section in app.expander if section.label == "Run log")

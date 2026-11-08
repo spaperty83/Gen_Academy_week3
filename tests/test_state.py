@@ -236,3 +236,44 @@ def test_trip_state_has_exact_requested_field_names():
         "round_steps", "trip_steps", "correction_cycles", "agent_error",
         "human_feedback", "decision", "warnings", "saved_path", "export_manifest",
     }
+
+
+def test_restored_same_named_request_is_revalidated_after_module_reload(request_data):
+    from pydantic import create_model
+
+    old_type = create_model("TripRequest", __module__="src.state", **{
+        name: (type(value), ...) for name, value in request_data.items()
+    })
+    old_request = old_type(**request_data)
+    assert not isinstance(old_request, TripRequest)
+    current = TripRequest.model_validate(old_request)
+    assert current.model_dump() == TripRequest(**request_data).model_dump()
+
+
+def test_restored_same_named_request_still_rejects_invalid_days(request_data):
+    from pydantic import create_model
+
+    old_type = create_model("TripRequest", __module__="src.state", **{
+        name: (type(value), ...) for name, value in request_data.items()
+    })
+    with pytest.raises(ValidationError):
+        TripRequest.model_validate(old_type(**(request_data | {"days": 12})))
+
+
+def test_restored_patch_preserves_omitted_fields():
+    from pydantic import create_model
+
+    old_type = create_model("RequestPatch", __module__="src.state", city=(str | None, None),
+                            start_date=(str | None, None))
+    patch = RequestPatch.model_validate(old_type(city="Paris"))
+    assert patch.model_dump(exclude_unset=True) == {"city": "Paris"}
+
+
+def test_unrelated_same_named_model_is_not_accepted(request_data):
+    from pydantic import create_model
+
+    unrelated = create_model("TripRequest", __module__="unrelated", **{
+        name: (type(value), ...) for name, value in request_data.items()
+    })
+    with pytest.raises(ValidationError):
+        TripRequest.model_validate(unrelated(**request_data))

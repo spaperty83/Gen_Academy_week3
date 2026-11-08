@@ -128,6 +128,7 @@ class SpecialistRun(AgentMiddleware):
         self.validation_reasks = 0
         self.validation_feedback: dict[str, Any] | None = None
         self.tool_failed = False
+        self.budget_declined = False
         self.failed_tools: set[str] = set()
         self.tool_messages: list[ToolMessage] = []
         self.progress_writer: Callable[[Any], None] | None = None
@@ -229,8 +230,6 @@ class SpecialistRun(AgentMiddleware):
             if name not in self.allowed:
                 raise ToolExecutionFailed("Tool is not allowed")
             if self.tool_calls >= self.budget:
-                if self.strict_tools:
-                    raise StepLimitReached("Tool-call budget reached")
                 # Decline only the excess call, without executing it or aborting
                 # the other completed calls in this model-authored batch.
                 data = {"ok": False, "data": None, "error": "tool_budget_exhausted"}
@@ -239,8 +238,10 @@ class SpecialistRun(AgentMiddleware):
                     tool_call_id=request.tool_call["id"], status="error",
                 )
                 self.tool_messages.append(result)
-                self.tool_failed = True
-                self.failed_tools.add(name)
+                self.budget_declined = True
+                if not self.strict_tools:
+                    self.tool_failed = True
+                    self.failed_tools.add(name)
                 return result
             self.tool_calls += 1
             if name == "read_page":
