@@ -605,3 +605,5 @@ Outcome: Changed the initial request field to single-line text_input with native
 Prompt: comitt the code
 
 Outcome: Committed pending workflow reliability fixes, display-only photos, weather presentation/export, UI controls/log placement, regression tests, documentation and labeled mock samples after required checks and a staged credential scan. Local secrets and generated runtime files remain excluded.
+
+Commit verification follow-up: Git reported future CRLF conversion for sample exports; added .gitattributes byte preservation and checked staged sample JSON/Markdown hashes against both committed manifests.

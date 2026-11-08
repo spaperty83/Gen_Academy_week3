@@ -1,0 +1,4 @@
+
+# Export manifests hash exact file bytes; preserve sample line endings.
+outputs/samples/*.json -text
+outputs/samples/*.md -text
