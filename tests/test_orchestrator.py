@@ -600,3 +600,15 @@ def test_redundant_critic_guard_cannot_bypass_hard_failures_or_agent_error(state
     assert validate_decision(state, "critic")[0] != "traveler"
     state["agent_error"] = {"agent": "critic", "message": "specialist_step_limit_reached"}
     assert validate_decision(state, "critic")[0] == "recovery"
+
+
+def test_unchecked_draft_cannot_be_replanned_before_critic(state):
+    state["critique_version"] = None
+    next_agent, reason = validate_decision(state, "planner")
+    assert next_agent == "critic"
+    assert reason == "guardrail: check the current draft before planning again"
+
+
+def test_current_critic_planner_finding_still_allows_replanning(state):
+    state["critique"] = Critique(hard_failures=[Finding(issue="Duplicate stop", owner="planner")])
+    assert validate_decision(state, "planner")[0] == "planner"

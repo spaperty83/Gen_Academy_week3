@@ -656,3 +656,24 @@ Outcome: Deleted every saved checkpoint thread through the public delete_trip AP
 Prompt: commit changes
 
 Outcome: Committed pending workflow/model compatibility fixes, UI refinements, regression tests and documentation after required checks and a staged secret scan; local credentials, checkpoints and generated runtime exports remain excluded.
+
+
+## Repeated planning after a London update
+
+Prompt: It failed again after I provided updates.
+
+Outcome: Read the latest local London revision: supervisor repeatedly requested Planner for unchecked drafts through v5, then Planner exhausted its single structured-output correction. Added a Critic-first guard for unchecked existing drafts with sufficient coverage; current planner-owned Critic findings still allow replanning and short coverage still routes to research. Added two unit guards and one real-graph mocked outing-revision regression. No live API calls or saved-trip mutation during diagnosis.
+
+
+## Diagnose later four-day London revision
+
+Prompt: Failed again after updates to draft.
+
+Outcome: Read the latest local Paris-to-London four-day revision: research and forecast succeeded, but Planner returned invalid output after one re-ask. Distinguished older Paris responses from the current London subgraph; current rejected drafts were not checkpointed, so their exact invalid field cannot be recovered. Added sanitized schema field/type feedback for the one correction and recovery warnings, plus known semantic day/constraint warnings without rejected values. Added two mocked diagnostics/security regressions. No claim of fixing the unknown live validation cause; no external calls or saved-trip mutation.
+
+
+## Commit all changes
+
+Prompt: commit all changes
+
+Outcome: Committed all pending planning guardrail, sanitized validation diagnostics, regression tests and documentation changes; system Python checks passed (439 mocked tests, three live tests skipped; Ruff passed).

@@ -2,7 +2,7 @@
 
 My agent helps a traveler plan a city trip in a Streamlit web app, replacing the 3–4 hours of reading travel blogs and juggling tabs it takes today. Five cooperating agents research places, check the weather, build a day-by-day itinerary and critique it on their own using 4 tools, then hand off to the traveler to approve or revise before the final itinerary is exported. I'll know it works when a traveler reaches an approved itinerary that passes every hard check in under 10 minutes for 4 out of 5 test trips.
 
-This is the product hypothesis and success target. The 3–4 hour baseline has not been measured here, and the 4/5 live target has not been demonstrated. Current evidence is **434 mocked tests passing, three live tests skipped**. No live evaluation CSV is present; the most recent recorded LangSmith access check returned HTTP 403.
+This is the product hypothesis and success target. The 3–4 hour baseline has not been measured here, and the 4/5 live target has not been demonstrated. Current evidence is **439 mocked tests passing, three live tests skipped**. No live evaluation CSV is present; the most recent recorded LangSmith access check returned HTTP 403.
 
 ## Agent framework
 
@@ -158,7 +158,7 @@ python -m ruff check src tests
 python -m pytest -q tests/test_failures.py tests/test_app.py tests/test_app_api.py tests/test_run_eval.py
 ```
 
-The most recent full run passed 434 tests with three live tests skipped. [tests/test_graph.py](tests/test_graph.py), `test_sqlite_restart_lists_pending_trip_and_resumes_export`, uses a temporary SQLite FILE: pause, close the connection, rebuild saver/graph, list the pending trip, approve and validate the export. UI tests also exercise cached resources, versioned actions, downloads and friendly errors. These are mocked functional checks, not measured human acceptance.
+The most recent full run passed 439 tests with three live tests skipped. [tests/test_graph.py](tests/test_graph.py), `test_sqlite_restart_lists_pending_trip_and_resumes_export`, uses a temporary SQLite FILE: pause, close the connection, rebuild saver/graph, list the pending trip, approve and validate the export. UI tests also exercise cached resources, versioned actions, downloads and friendly errors. These are mocked functional checks, not measured human acceptance.
 
 ```powershell
 python -m scripts.smoke_test
@@ -408,3 +408,21 @@ Patch omission versus explicit null is preserved; invalid values and unrelated
 models remain rejected. A saved Yellowstone modification exposed this validation
 failure before the revision was applied. Restart the server after code updates;
 that already-stopped attempt may require a new trip because no interrupt was saved.
+
+
+When coverage is sufficient, an existing draft that has not yet been checked cannot
+be sent straight back to Planner: that choice is redirected to Critic first. A
+saved London revision exposed repeated replanning of the same pending feedback,
+creating drafts through v5 before a later invalid response caused recovery.
+Planner-owned findings from a current critique can still request a correction;
+coverage, step caps and agent-error handling remain enforced. A mocked outing
+revision regression checks one new draft followed by its matching critique.
+
+
+Planner recovery diagnostics now retain sanitized schema field paths/error types
+or known day/constraint labels from rejected drafts. These details also guide the
+existing single correction; rejected field values and provider response bodies
+are not copied into warnings. The later four-day London revision exhausted output
+validation despite successful research and forecast retrieval; its rejected output
+was not checkpointed, so that historical run's precise invalid field is unknown.
+No live saved-trip retest has been performed for that failure.

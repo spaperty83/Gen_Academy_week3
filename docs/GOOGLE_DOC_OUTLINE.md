@@ -86,7 +86,7 @@ records, not additional Git commits.
 
 ## 7. Results and evaluation
 
-- Report current mocked suite: 434 passed, three live skipped; Ruff passed.
+- Report current mocked suite: 439 passed, three live skipped; Ruff passed.
 - Name restart coverage:
   tests/test_graph.py::test_sqlite_restart_lists_pending_trip_and_resumes_export.
 - Link all sixteen failure rows in README.md; distinguish hard versus soft and

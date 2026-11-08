@@ -113,8 +113,35 @@ def _weather_notes(
     return itinerary.model_copy(update={"days": days, "warnings": warnings})
 
 
+
+def _validation_warning(run: SpecialistRun | None) -> list[str]:
+    """Expose only field paths and known constraint labels, never rejected values."""
+    feedback = run.validation_feedback if run is not None else None
+    if not feedback:
+        return []
+    if feedback.get("schema_errors"):
+        errors = [f"{item['field']} ({item['type']})" for item in feedback["schema_errors"]]
+        return ["Planner output did not match the required format: " + "; ".join(errors) + "."]
+    known = {
+        "schema invalid", "place schema invalid", "place without valid evidence",
+        "stop not in places", "stop source URL does not match place", "duplicate stop",
+        "itinerary city does not match request", "wrong number of days",
+        "day numbering does not match request", "day outside its pace limit",
+        "too many food stops in a day", "rainy day requires recorded indoor places",
+    }
+    labels = []
+    for finding in feedback.get("findings", []):
+        label = finding["issue"].split(":", 1)[0]
+        if label not in known:
+            continue
+        day = finding.get("day")
+        labels.append(f"Day {day}: {label}" if isinstance(day, int) and 1 <= day <= 7 else label)
+    return ["Planner draft rejected: " + "; ".join(dict.fromkeys(labels)) + "."] if labels else []
+
+
 def planner(state: TripState, config: RunnableConfig) -> dict[str, Any]:
     """Build one grounded version, or return agent_error while keeping prior state."""
+    run = None
     try:
         trip = TripRequest.model_validate(state["request"])
         places = [Place.model_validate(place) for place in state.get("places", [])]
@@ -160,5 +187,6 @@ def planner(state: TripState, config: RunnableConfig) -> dict[str, Any]:
         LOGGER.warning("Planner failed (%s)", type(error).__name__)
         return {
             "agent_error": AgentError(agent="planner", message=failure_message(error)),
+            "warnings": _validation_warning(run),
             "approved_version": None,
         }

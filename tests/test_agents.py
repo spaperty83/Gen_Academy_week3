@@ -793,3 +793,23 @@ def test_researcher_crossing_budget_finalizes_successful_receipts(state, fake_to
     assert len(fake_tools[0]) == 8
     assert model.bound_names[-1] == ["ResearchCandidates"]
     assert any("excess calls skipped" in warning for warning in result.warnings)
+
+
+def test_planner_schema_failure_reports_field_not_rejected_values(state, fake_tools, monkeypatch):
+    bad = state["itinerary"].model_dump()
+    bad["days"][0]["stops"][0]["time_slot"] = "private-rejected-value"
+    model = use_model(monkeypatch, planner_module, [structured(Itinerary, bad)])
+    result = planner(state, {})
+    assert result["agent_error"].message == "structured_output_invalid_after_one_reask"
+    assert model.calls == 2
+    assert "time_slot" in result["warnings"][0]
+    assert "private-rejected-value" not in str(result["warnings"])
+
+
+def test_planner_semantic_failure_reports_day_and_constraint(state, fake_tools, monkeypatch):
+    bad = state["itinerary"].model_dump()
+    bad["days"][0]["stops"] = bad["days"][0]["stops"][:2]
+    use_model(monkeypatch, planner_module, [structured(Itinerary, bad)])
+    result = planner(state, {})
+    assert result["agent_error"]
+    assert "Day 1: day outside its pace limit" in result["warnings"][0]

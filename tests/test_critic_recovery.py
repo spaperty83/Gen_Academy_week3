@@ -196,3 +196,28 @@ def test_research_search_batches_over_budget_do_not_discard_valid_food(run):
     assert any(place.category == "food" for place in result["places"])
     assert not result["critique"].hard_failures
     assert result["saved_path"] is None
+
+
+def test_order_revision_does_not_replan_unchecked_draft_repeatedly(run):
+    first = run.start()
+    respond = run.respond
+
+    def repeated_planning(role, payload, messages, call_number, bound):
+        if role == "orchestrator" and bound[0] == "RequestPatch":
+            return output("RequestPatch", {"change_types": ["order"], "other_notes": "Plan an afternoon outing"})
+        if (role == "orchestrator" and bound[0] == "OrchestratorDecision"
+                and payload["human_feedback"] and payload["has_draft"]
+                and payload["critique_version"] != payload["draft_version"]):
+            return output("OrchestratorDecision", {"next": "planner", "instructions": {},
+                                                  "reason": "Apply the outing feedback again"})
+        return respond(role, payload, messages, call_number, bound)
+
+    run.respond = repeated_planning
+    revised = resume_trip(run.graph, first["thread_id"], "revise", feedback="Plan an afternoon outing")
+    assert trip_screen(revised)["kind"] == "approval"
+    assert revised["draft_version"] == first["draft_version"] + 1
+    assert revised["critique_version"] == revised["draft_version"]
+    assert revised["agent_error"] is None
+    assert revised["original_request"] == first["original_request"]
+    assert any("before planning again" in row["reason"] for row in revised["delegation_log"])
+    assert revised["saved_path"] is None

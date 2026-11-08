@@ -159,6 +159,13 @@ def validate_decision(
         and state.get("critique_version") != state.get("draft_version")
     ):
         return "critic", "guardrail: check the current draft before dispatching more research"
+    if (
+        chosen == "planner" and state.get("itinerary") is not None
+        and state.get("request") is not None
+        and coverage.has_enough(state.get("places", []), state["request"])
+        and state.get("critique_version") != state.get("draft_version")
+    ):
+        return "critic", "guardrail: check the current draft before planning again"
     if chosen == "critic" and gate.approvable(state):
         return "traveler", "guardrail: current draft already checked; request traveler review"
     reasons = []

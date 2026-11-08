@@ -11,6 +11,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.agents.structured_output import (
     MultipleStructuredOutputsError,
+    StructuredOutputValidationError,
     ToolStrategy,
 )
 from langchain_core.language_models import BaseChatModel
@@ -137,6 +138,28 @@ class SpecialistRun(AgentMiddleware):
 
     def _reask(self, error: Exception) -> str:
         """Allow exactly one schema/semantic correction in this invocation."""
+        if isinstance(error, StructuredOutputValidationError):
+            source = error.source
+            seen: set[int] = set()
+            while source is not None and id(source) not in seen:
+                seen.add(id(source))
+                if isinstance(source, ValidationError):
+                    safe_fields = {
+                        "city", "days", "day_number", "theme", "stops", "time_slot", "place_name",
+                        "note", "source_url", "weather_note", "budget_tips", "warnings",
+                    }
+                    self.validation_feedback = {"schema_errors": [
+                        {"field": ".".join(str(part) if isinstance(part, int) or part in safe_fields
+                                           else "field" for part in item["loc"]),
+                         "type": item["type"]}
+                        for item in source.errors(include_input=False, include_url=False)[:8]
+                    ]}
+                    break
+                source = source.__cause__ or source.__context__
+        if isinstance(error, MultipleStructuredOutputsError):
+            self.validation_feedback = {"schema_errors": [
+                {"field": "response", "type": "multiple_structured_outputs"},
+            ]}
         if self.validation_reasks:
             raise StructuredOutputExhausted("Structured output is invalid") from None
         self.validation_reasks += 1
