@@ -703,3 +703,9 @@ Outcome: Preserved the previous README byte-for-byte in a sibling backup and rep
 Prompt: commit
 
 Outcome: Committed the clean Week3 README, restored the missing backup from the previous committed README, and included this prompt log; mocked tests and Ruff passed.
+
+## Publish Week3 to GitHub
+
+Prompt: Check into GitHub under spaperty83 as Gen_Academy_week3.
+
+Outcome: Prepared the Week3 project for a private GitHub repository named Gen_Academy_week3 with project files at its root; credentials and runtime files remain excluded.
