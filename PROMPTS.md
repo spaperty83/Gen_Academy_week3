@@ -691,3 +691,15 @@ Outcome: Read the latest local Agra checkpoint: two-day normal-pace request had 
 Prompt: commit
 
 Outcome: Committed pending unchecked-draft routing, safe Planner diagnostics, request-specific response-schema bounds, regression tests and documentation after required checks and a staged secret scan. Credentials and runtime data remain excluded.
+
+## Clean Week3 README
+
+Prompt: Create a clean README.md with a project overview, example user inputs and commands to bring up the Streamlit application; keep the current README as a backup. Destination confirmed: Week3.
+
+Outcome: Preserved the previous README byte-for-byte in a sibling backup and replaced README.md with setup, configuration, startup commands, example trips/revisions, review/export flow, safeguards and development checks.
+
+## Commit README cleanup
+
+Prompt: commit
+
+Outcome: Committed the clean Week3 README, restored the missing backup from the previous committed README, and included this prompt log; mocked tests and Ruff passed.
