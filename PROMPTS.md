@@ -677,3 +677,17 @@ Outcome: Read the latest local Paris-to-London four-day revision: research and f
 Prompt: commit all changes
 
 Outcome: Committed all pending planning guardrail, sanitized validation diagnostics, regression tests and documentation changes; system Python checks passed (439 mocked tests, three live tests skipped; Ruff passed).
+
+
+## Agra stop-count validation failure
+
+Prompt: The run failed, can you check.
+
+Outcome: Read the latest local Agra checkpoint: two-day normal-pace request had enough evidenced places but Planner's corrected output violated the four-stops-per-day requirement on both days. Added request-specific day/stop/range bounds to the Planner response tool schema, while parsing back into the static Itinerary model and retaining semantic checks and one correction. Added schema-bound tests and an actual model-binding/static-output regression. No saved-trip mutation or external API calls during diagnosis; live retry is unverified.
+
+
+## Commit Planner validation improvements
+
+Prompt: commit
+
+Outcome: Committed pending unchecked-draft routing, safe Planner diagnostics, request-specific response-schema bounds, regression tests and documentation after required checks and a staged secret scan. Credentials and runtime data remain excluded.

@@ -134,12 +134,13 @@ class SpecialistRun(AgentMiddleware):
         self.tool_messages: list[ToolMessage] = []
         self.progress_writer: Callable[[Any], None] | None = None
         self.agent_name = ""
+        self.response_model: type[BaseModel] | None = None
         self._lock = Lock()
 
     def _reask(self, error: Exception) -> str:
         """Allow exactly one schema/semantic correction in this invocation."""
-        if isinstance(error, StructuredOutputValidationError):
-            source = error.source
+        if isinstance(error, (StructuredOutputValidationError, ValidationError)):
+            source = error.source if isinstance(error, StructuredOutputValidationError) else error
             seen: set[int] = set()
             while source is not None and id(source) not in seen:
                 seen.add(id(source))
@@ -221,6 +222,11 @@ class SpecialistRun(AgentMiddleware):
                 raise StepLimitReached("Model ignored final-response-only tool limit")
             try:
                 if response.structured_response is not None:
+                    if self.response_model is not None:
+                        response = ModelResponse(
+                            result=response.result,
+                            structured_response=self.response_model.model_validate(response.structured_response),
+                        )
                     if self.simulate_first_parse:
                         raise OutputInvalid("Simulated first parse failure")
                     if self.validator is not None:
@@ -232,7 +238,7 @@ class SpecialistRun(AgentMiddleware):
                         result=[*prefix, *response.result],
                         structured_response=response.structured_response,
                     )
-            except OutputInvalid as error:
+            except (OutputInvalid, ValidationError) as error:
                 correction = HumanMessage(content=self._reask(error))
                 prefix.extend([*response.result, correction])
                 request = request.override(messages=[*request.messages, *response.result, correction])
@@ -346,9 +352,11 @@ class SpecialistRun(AgentMiddleware):
         payload: Mapping[str, Any],
         config: RunnableConfig,
         name: str,
+        response_schema: dict[str, Any] | None = None,
     ) -> BaseModel:
         """Build the installed LangChain agent and pass runtime config throughout."""
         self.agent_name = name
+        self.response_model = schema
         try:
             # Capture the parent workflow writer before entering the child agent.
             self.progress_writer = get_stream_writer()
@@ -357,7 +365,7 @@ class SpecialistRun(AgentMiddleware):
         agent = create_agent(
             model=model, tools=list(tools), system_prompt=prompt,
             response_format=ToolStrategy(
-                schema, handle_errors=self._reask,
+                response_schema if response_schema is not None else schema, handle_errors=self._reask,
                 tool_message_content="Structured response received.",
             ),
             middleware=[self], name=name,

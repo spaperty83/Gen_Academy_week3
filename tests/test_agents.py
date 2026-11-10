@@ -40,12 +40,14 @@ class ScriptedModel(FakeMessagesListChatModel):
 
     bound_names: list[list[str]] = Field(default_factory=list)
     bound_options: list[dict[str, Any]] = Field(default_factory=list)
+    bound_tools: list[list[dict[str, Any]]] = Field(default_factory=list)
     seen_messages: list[Any] = Field(default_factory=list)
     calls: int = 0
     fail_provider: bool = False
 
     def bind_tools(self, tools, **kwargs):
         self.bound_options.append(kwargs)
+        self.bound_tools.append([convert_to_openai_tool(tool) for tool in tools])
         self.bound_names.append([
             convert_to_openai_tool(tool)["function"]["name"] for tool in tools
         ])
@@ -813,3 +815,28 @@ def test_planner_semantic_failure_reports_day_and_constraint(state, fake_tools, 
     result = planner(state, {})
     assert result["agent_error"]
     assert "Day 1: day outside its pace limit" in result["warnings"][0]
+
+
+@pytest.mark.parametrize(("days", "pace", "stops"), [(2, "normal", 4), (7, "packed", 5), (1, "relaxed", 3)])
+def test_planner_response_schema_exposes_exact_requested_counts(days, pace, stops):
+    from src.agents.planner import _itinerary_schema
+
+    trip = TripRequest(city="Agra", days=days, budget="mid", interests=[], pace=pace)
+    schema = _itinerary_schema(trip)
+    assert schema["title"] == "Itinerary"
+    assert schema["properties"]["days"]["minItems"] == schema["properties"]["days"]["maxItems"] == days
+    day = schema["$defs"]["DayPlan"]["properties"]
+    assert day["stops"]["minItems"] == day["stops"]["maxItems"] == stops
+    assert day["day_number"]["maximum"] == days
+
+
+def test_planner_model_receives_count_bounds_and_returns_static_model(state, fake_tools, monkeypatch):
+    model = use_model(monkeypatch, planner_module, [structured(Itinerary, state["itinerary"])])
+    result = planner(state, {})
+    assert result["agent_error"] is None
+    assert type(result["itinerary"]) is Itinerary
+    schema = next(tool["function"]["parameters"] for tool in model.bound_tools[0]
+                  if tool["function"]["name"] == "Itinerary")
+    assert schema["properties"]["days"]["minItems"] == schema["properties"]["days"]["maxItems"] == 1
+    day = schema.get("$defs", {}).get("DayPlan") or schema["properties"]["days"]["items"]
+    assert day["properties"]["stops"]["minItems"] == day["properties"]["stops"]["maxItems"] == 3

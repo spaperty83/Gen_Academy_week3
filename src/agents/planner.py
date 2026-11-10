@@ -139,6 +139,17 @@ def _validation_warning(run: SpecialistRun | None) -> list[str]:
     return ["Planner draft rejected: " + "; ".join(dict.fromkeys(labels)) + "."] if labels else []
 
 
+
+def _itinerary_schema(trip: TripRequest) -> dict[str, Any]:
+    """Expose this request's exact day/stop counts without dynamic checkpoint models."""
+    schema = Itinerary.model_json_schema()
+    schema["properties"]["days"].update(minItems=trip.days, maxItems=trip.days)
+    day = schema["$defs"]["DayPlan"]["properties"]
+    day["stops"].update(minItems=stops_per_day(trip.pace), maxItems=stops_per_day(trip.pace))
+    day["day_number"].update(minimum=1, maximum=trip.days)
+    return schema
+
+
 def planner(state: TripState, config: RunnableConfig) -> dict[str, Any]:
     """Build one grounded version, or return agent_error while keeping prior state."""
     run = None
@@ -175,7 +186,7 @@ def planner(state: TripState, config: RunnableConfig) -> dict[str, Any]:
                 "planner_findings": findings,
                 "human_feedback": state.get("human_feedback"),
                 "instructions": state.get("instructions", {}).get("planner", ""),
-            }, config, "planner",
+            }, config, "planner", response_schema=_itinerary_schema(trip),
         )
         weather = _weather(run)
         return {
